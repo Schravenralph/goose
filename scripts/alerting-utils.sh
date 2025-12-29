@@ -351,6 +351,11 @@ send_pagerduty_alert() {
 
 # Send alert to all configured channels
 send_alert() {
+    # Use structured logging if available
+    if command -v start_span &> /dev/null; then
+        start_span "send_alert"
+    fi
+    
     local severity="$1"
     local alert_type="$2"
     local message="$3"
@@ -360,28 +365,76 @@ send_alert() {
     local script_name="${SCRIPT_NAME:-$(basename "${BASH_SOURCE[1]:-$0}")}"
     local alert_id=$(generate_alert_id "$alert_type" "$script_name" "$context")
     
+    # Use structured logging if available
+    if command -v log_info &> /dev/null; then
+        log_debug "Processing alert" "alert_type=$alert_type" "severity=$severity" "alert_id=$alert_id"
+    fi
+    
     # Check deduplication
     if [[ "$dedup" == "true" ]] && should_deduplicate_alert "$alert_id"; then
+        if command -v log_debug &> /dev/null; then
+            log_debug "Alert deduplicated, skipping" "alert_id=$alert_id"
+        fi
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 0  # Alert already sent recently, skip
     fi
     
     # Log the alert
     log_alert "$severity" "$alert_type" "$message" "$context"
     
+    # Track metrics if available
+    if command -v increment_counter &> /dev/null; then
+        increment_counter "alerts_sent"
+        increment_counter "alerts_sent_${severity,,}"
+    fi
+    
     # Send to all configured channels
-    send_email_alert "$severity" "[$severity] Goose Alert: $alert_type" "$message\n\nContext: $context"
-    send_slack_alert "$severity" "$message" "$context"
-    send_webhook_alert "$severity" "$message" "$context"
-    send_pagerduty_alert "$severity" "$message" "$context"
+    local channels_used=0
+    if send_email_alert "$severity" "[$severity] Goose Alert: $alert_type" "$message\n\nContext: $context"; then
+        ((channels_used++)) || true
+    fi
+    if send_slack_alert "$severity" "$message" "$context"; then
+        ((channels_used++)) || true
+    fi
+    if send_webhook_alert "$severity" "$message" "$context"; then
+        ((channels_used++)) || true
+    fi
+    if send_pagerduty_alert "$severity" "$message" "$context"; then
+        ((channels_used++)) || true
+    fi
+    
+    # Record metrics if available
+    if command -v record_metric &> /dev/null; then
+        record_metric "alert_channels_used" "$channels_used" "alert_type=$alert_type"
+    fi
     
     # Record that alert was sent
     record_alert_sent "$alert_id"
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Alert sent successfully" "alert_type=$alert_type" "severity=$severity" "channels=$channels_used"
+    fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 }
 
 # Check for script failure and send alert
 check_script_failure() {
+    # Use structured logging if available
+    if command -v start_span &> /dev/null; then
+        start_span "check_script_failure"
+    fi
+    
     local exit_code="${1:-0}"
     local script_name="${SCRIPT_NAME:-$(basename "${BASH_SOURCE[1]:-$0}")}"
+    
+    if command -v log_debug &> /dev/null; then
+        log_debug "Checking script failure" "exit_code=$exit_code" "script=$script_name"
+    fi
     
     if [[ $exit_code -ne 0 ]]; then
         local severity="$SEVERITY_CRITICAL"
@@ -406,6 +459,14 @@ check_script_failure() {
         send_alert "$severity" "script_failure" \
             "Script '$script_name' failed with exit code $exit_code" \
             "$context"
+    else
+        if command -v log_debug &> /dev/null; then
+            log_debug "Script completed successfully" "exit_code=$exit_code"
+        fi
+    fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
     fi
 }
 
@@ -500,14 +561,35 @@ check_repeated_failures() {
 
 # Analyze metrics file and check for anomalies
 analyze_metrics_and_alert() {
+    # Use structured logging if available
+    if command -v start_span &> /dev/null; then
+        start_span "analyze_metrics_and_alert"
+    fi
+    
     local metrics_file="${1:-}"
     
     if [[ -z "$metrics_file" ]] || [[ ! -f "$metrics_file" ]]; then
+        if command -v log_debug &> /dev/null; then
+            log_debug "No metrics file provided for analysis"
+        fi
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 0
     fi
     
     if ! command -v jq &> /dev/null; then
+        if command -v log_warn &> /dev/null; then
+            log_warn "Cannot analyze metrics: jq not available"
+        fi
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 0  # Can't analyze without jq
+    fi
+    
+    if command -v log_debug &> /dev/null; then
+        log_debug "Analyzing metrics file" "file=$metrics_file"
     fi
     
     local exit_code=$(jq -r '.exit_code // 0' "$metrics_file" 2>/dev/null || echo "0")
@@ -536,6 +618,19 @@ analyze_metrics_and_alert() {
     
     if [[ $error_count -gt 0 ]]; then
         check_error_count "$metrics_file" "$error_count"
+    fi
+    
+    # Track metrics if available
+    if command -v increment_counter &> /dev/null; then
+        increment_counter "metrics_analyses"
+    fi
+    
+    if command -v log_debug &> /dev/null; then
+        log_debug "Metrics analysis complete" "exit_code=$exit_code" "duration=$duration" "error_count=$error_count"
+    fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
     fi
 }
 

@@ -6,6 +6,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="datadog-forwarder"
+
+# Source logging utilities
+source "$SCRIPT_DIR/logging-utils.sh"
+
 # Default configuration
 FORWARD_LOGS=true
 FORWARD_METRICS=true
@@ -81,18 +87,18 @@ done
 
 # Check for API key
 if [[ -z "$DD_API_KEY" ]]; then
-    echo "Error: DD_API_KEY is required. Set it via --api-key or DD_API_KEY environment variable."
+    log_error "DD_API_KEY is required. Set it via --api-key or DD_API_KEY environment variable."
     exit 1
 fi
 
 # Check dependencies
 if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required but not installed. Please install jq first."
+    log_error "jq is required but not installed. Please install jq first."
     exit 1
 fi
 
 if ! command -v curl &> /dev/null; then
-    echo "Error: curl is required but not installed. Please install curl first."
+    log_error "curl is required but not installed. Please install curl first."
     exit 1
 fi
 
@@ -109,8 +115,13 @@ touch "$PROCESSED_METRICS_FILE"
 
 # Function to forward logs to Datadog
 forward_logs() {
+    start_span "forward_logs"
     local count=0
     local batch=()
+    local success_count=0
+    local failure_count=0
+    
+    log_info "Starting log forwarding to Datadog"
     
     # Find unprocessed log files
     while IFS= read -r log_file; do
@@ -143,7 +154,11 @@ forward_logs() {
                 
                 # Send batch when it reaches BATCH_SIZE
                 if [[ ${#batch[@]} -ge $BATCH_SIZE ]]; then
-                    send_log_batch "${batch[@]}"
+                    if send_log_batch "${batch[@]}"; then
+                        ((success_count += ${#batch[@]})) || true
+                    else
+                        ((failure_count += ${#batch[@]})) || true
+                    fi
                     batch=()
                 fi
             fi
@@ -155,16 +170,31 @@ forward_logs() {
     
     # Send remaining batch
     if [[ ${#batch[@]} -gt 0 ]]; then
-        send_log_batch "${batch[@]}"
+        if send_log_batch "${batch[@]}"; then
+            ((success_count += ${#batch[@]})) || true
+        else
+            ((failure_count += ${#batch[@]})) || true
+        fi
     fi
     
+    # Record metrics
+    record_metric "logs_processed" "$count"
+    record_metric "logs_success" "$success_count"
+    record_metric "logs_failure" "$failure_count"
+    increment_counter "log_forward_cycles"
+    
     if [[ $count -gt 0 ]]; then
-        echo "Forwarded $count log entries to Datadog"
+        log_info "Forwarded $count log entries to Datadog" "success=$success_count" "failure=$failure_count"
+    else
+        log_debug "No new log entries to forward"
     fi
+    
+    end_span
 }
 
 # Function to send log batch to Datadog
 send_log_batch() {
+    local batch_size=${#@}
     local batch_json
     batch_json=$(printf '%s\n' "$@" | jq -s '.')
     
@@ -180,16 +210,25 @@ send_log_batch() {
     body=$(echo "$response" | head -n-1)
     
     if [[ "$http_code" != "200" ]]; then
-        echo "Warning: Failed to forward logs to Datadog (HTTP $http_code): $body" >&2
+        log_warn "Failed to forward log batch to Datadog" "http_code=$http_code" "batch_size=$batch_size" "error=$body"
+        increment_counter "log_batch_failures"
         return 1
     fi
     
+    log_debug "Successfully forwarded log batch" "batch_size=$batch_size"
+    increment_counter "log_batch_successes"
     return 0
 }
 
 # Function to forward metrics to Datadog
 forward_metrics() {
+    start_span "forward_metrics"
+    local forward_start_time=$(date +%s.%N)
     local count=0
+    local success_count=0
+    local failure_count=0
+    
+    log_info "Starting metrics forwarding to Datadog"
     
     # Find unprocessed metrics files
     while IFS= read -r metrics_file; do
@@ -254,28 +293,61 @@ forward_metrics() {
             if [[ "$http_code" == "202" ]] || [[ "$http_code" == "200" ]]; then
                 echo "$(realpath "$metrics_file")" >> "$PROCESSED_METRICS_FILE"
                 ((count++)) || true
+                ((success_count++)) || true
+                log_debug "Successfully forwarded metrics file" "file=$(basename "$metrics_file")"
             else
-                echo "Warning: Failed to forward metrics from $metrics_file (HTTP $http_code): $body" >&2
+                ((failure_count++)) || true
+                log_warn "Failed to forward metrics file" "file=$(basename "$metrics_file")" "http_code=$http_code" "error=$body"
             fi
         fi
     done < <(find "$METRICS_DIR" -name "*-metrics-*.json" -type f -mmin +1 2>/dev/null | head -100)
     
-    if [[ $count -gt 0 ]]; then
-        echo "Forwarded metrics from $count files to Datadog"
+    # Calculate forwarding latency
+    local forward_end_time=$(date +%s.%N)
+    local forward_latency
+    if command -v bc &> /dev/null; then
+        forward_latency=$(echo "$forward_end_time - $forward_start_time" | bc -l 2>/dev/null || echo "0")
+    else
+        forward_latency=$(awk "BEGIN {printf \"%.3f\", $forward_end_time - $forward_start_time}" 2>/dev/null || echo "0")
     fi
+    
+    # Record metrics
+    record_metric "metrics_files_processed" "$count"
+    record_metric "metrics_files_success" "$success_count"
+    record_metric "metrics_files_failure" "$failure_count"
+    record_metric "metrics_forward_latency_seconds" "$forward_latency"
+    increment_counter "metrics_forward_cycles"
+    
+    if [[ $count -gt 0 ]]; then
+        log_info "Forwarded metrics from $count files to Datadog" "success=$success_count" "failure=$failure_count" "latency=${forward_latency}s"
+    else
+        log_debug "No new metrics files to forward"
+    fi
+    
+    end_span
 }
 
 # Main loop
 main() {
-    echo "🚀 Starting Datadog forwarder..."
-    echo "   API Key: ${DD_API_KEY:0:8}..."
-    echo "   Site: $DD_SITE"
-    echo "   Log Directory: $LOG_DIR"
-    echo "   Metrics Directory: $METRICS_DIR"
-    echo "   Interval: ${INTERVAL}s"
-    echo ""
+    log_info "🚀 Starting Datadog forwarder..." \
+        "api_key_prefix=${DD_API_KEY:0:8}..." \
+        "site=$DD_SITE" \
+        "log_dir=$LOG_DIR" \
+        "metrics_dir=$METRICS_DIR" \
+        "interval=${INTERVAL}s" \
+        "forward_logs=$FORWARD_LOGS" \
+        "forward_metrics=$FORWARD_METRICS"
+    
+    record_metric "forwarder_mode" "$([ "$FORWARD_LOGS" == "true" ] && echo "logs " || echo "")$([ "$FORWARD_METRICS" == "true" ] && echo "metrics" || echo "")"
+    record_metric "dd_site" "$DD_SITE"
+    record_metric "batch_size" "$BATCH_SIZE"
+    record_metric "interval" "$INTERVAL"
+    
+    increment_counter "forwarder_starts"
     
     while true; do
+        start_span "forwarder_cycle"
+        
         if [[ "$FORWARD_LOGS" == "true" ]]; then
             forward_logs
         fi
@@ -284,12 +356,13 @@ main() {
             forward_metrics
         fi
         
+        end_span
         sleep "$INTERVAL"
     done
 }
 
 # Handle signals
-trap 'echo "Shutting down..."; exit 0' INT TERM
+trap 'log_info "Shutting down..."; EXIT_CODE=0; exit 0' INT TERM
 
 # Run main loop
 main
