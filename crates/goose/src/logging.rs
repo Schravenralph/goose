@@ -30,6 +30,16 @@ pub fn prepare_log_directory(component: &str, use_date_subdir: bool) -> Result<P
     Ok(log_dir)
 }
 
+/// Cleanup old logs based on retention policy.
+/// 
+/// This function removes old log files and directories based on configurable retention periods.
+/// Retention periods can be set via environment variables:
+/// - `GOOSE_LOG_DETAILED_RETENTION_DAYS` (default: 7) - Keep detailed logs for this many days
+/// - `GOOSE_LOG_SUMMARY_RETENTION_DAYS` (default: 30) - Keep summary logs for this many days
+/// 
+/// # Arguments
+/// 
+/// * `component` - The component name (e.g., "cli", "server", "debug", "llm")
 pub fn cleanup_old_logs(component: &str) -> Result<()> {
     let base_log_dir = Paths::in_state_dir("logs");
     let component_dir = base_log_dir.join(component);
@@ -38,7 +48,19 @@ pub fn cleanup_old_logs(component: &str) -> Result<()> {
         return Ok(());
     }
 
-    let two_weeks = SystemTime::now() - Duration::from_secs(14 * 24 * 60 * 60);
+    // Get retention periods from environment or use defaults
+    let detailed_retention_days = std::env::var("GOOSE_LOG_DETAILED_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(7);
+    let summary_retention_days = std::env::var("GOOSE_LOG_SUMMARY_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+
+    let detailed_retention = SystemTime::now() - Duration::from_secs(detailed_retention_days * 24 * 60 * 60);
+    let summary_retention = SystemTime::now() - Duration::from_secs(summary_retention_days * 24 * 60 * 60);
+
     let entries = fs::read_dir(&component_dir)?;
 
     for entry in entries.flatten() {
@@ -46,9 +68,52 @@ pub fn cleanup_old_logs(component: &str) -> Result<()> {
 
         if let Ok(metadata) = entry.metadata() {
             if let Ok(modified) = metadata.modified() {
-                if modified < two_weeks && path.is_dir() {
-                    let _ = fs::remove_dir_all(&path);
+                if path.is_dir() {
+                    // Remove date-based subdirectories older than summary retention
+                    if modified < summary_retention {
+                        let _ = fs::remove_dir_all(&path);
+                    }
+                } else if path.is_file() {
+                    // Remove log files older than summary retention
+                    // Keep files between detailed and summary retention for potential archival
+                    if modified < summary_retention {
+                        // Check if this might be a critical log (contains error/fatal)
+                        let should_archive = modified >= detailed_retention
+                            && (path.extension().and_then(|s| s.to_str()) == Some("log")
+                                || path.extension().and_then(|s| s.to_str()) == Some("jsonl"));
+
+                        if should_archive {
+                            // Try to check if log contains errors (simple heuristic)
+                            if let Ok(content) = fs::read_to_string(&path) {
+                                let has_error = content.contains("ERROR") || content.contains("FATAL") || content.contains("error");
+                                if has_error {
+                                    // Archive critical logs to archive subdirectory
+                                    let archive_dir = component_dir.join("archive");
+                                    let _ = fs::create_dir_all(&archive_dir);
+                                    if let Some(filename) = path.file_name() {
+                                        let archive_path = archive_dir.join(filename);
+                                        let _ = fs::copy(&path, &archive_path);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Remove the old file
+                        let _ = fs::remove_file(&path);
+                    }
                 }
+            }
+        }
+    }
+
+    // Clean up empty date subdirectories
+    let entries = fs::read_dir(&component_dir)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && path.file_name().and_then(|s| s.to_str()).map(|s| s.len() == 10 && s.chars().all(|c| c.is_ascii_digit() || c == '-')).unwrap_or(false) {
+            // This looks like a date directory (YYYY-MM-DD format)
+            if fs::read_dir(&path)?.next().is_none() {
+                let _ = fs::remove_dir(&path);
             }
         }
     }

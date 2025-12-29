@@ -2,6 +2,14 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="goose-db-helper"
+
+# Source logging utilities
+if [[ -f "$SCRIPT_DIR/logging-utils.sh" ]]; then
+    source "$SCRIPT_DIR/logging-utils.sh"
+fi
+
 BACKUP_DIR="${HOME}/.local/share/goose/goose-db-backups"
 
 RED='\033[0;31m'

@@ -86,7 +86,11 @@ else
 fi
 
 # Create sample code files for analysis
-echo "Creating sample code files for testing..."
+if command -v log_info &> /dev/null; then
+  log_info "Creating sample code files for testing..."
+else
+  echo "Creating sample code files for testing..."
+fi
 cat > "$TESTDIR/sample.rs" << 'EOF'
 // TODO: Add error handling
 fn calculate(x: i32, y: i32) -> i32 {
@@ -142,31 +146,75 @@ check_recipe_output() {
   fi
 }
 
-echo "Running recipe with parallel subrecipes..."
+if command -v log_info &> /dev/null; then
+  log_info "Running recipe with parallel subrecipes..."
+  start_span "recipe_execution"
+else
+  echo "Running recipe with parallel subrecipes..."
+fi
+
 TMPFILE=$(mktemp)
 if (cd "$TESTDIR" && "$SCRIPT_DIR/target/release/goose" run --recipe project_analyzer_parallel.yaml --no-session 2>&1) | tee "$TMPFILE"; then
-  echo "✓ SUCCESS: Recipe completed successfully"
+  if command -v log_info &> /dev/null; then
+    log_info "Recipe completed successfully"
+    increment_counter "recipe_successes"
+    record_metric "recipe_execution_result" "success"
+  else
+    echo "✓ SUCCESS: Recipe completed successfully"
+  fi
   RESULTS+=("✓ Recipe exit code")
   check_recipe_output "$TMPFILE" "parallel"
 else
-  echo "✗ FAILED: Recipe execution failed"
+  if command -v log_error &> /dev/null; then
+    log_error "Recipe execution failed"
+    increment_counter "recipe_failures"
+    record_metric "recipe_execution_result" "failed"
+  else
+    echo "✗ FAILED: Recipe execution failed"
+  fi
   RESULTS+=("✗ Recipe exit code")
 fi
+
+if command -v end_span &> /dev/null; then
+    end_span
+fi
+
 rm "$TMPFILE"
-echo ""
+
+if command -v end_span &> /dev/null; then
+    end_span
+    record_metric "total_subrecipe_tests" "${#RESULTS[@]}"
+    local passed_count=$(echo "${RESULTS[@]}" | grep -o "✓" | wc -l | tr -d ' ')
+    local failed_count=$(echo "${RESULTS[@]}" | grep -o "✗" | wc -l | tr -d ' ')
+    record_metric "passed_subrecipe_tests" "$passed_count"
+    record_metric "failed_subrecipe_tests" "$failed_count"
+fi
 
 rm -rf "$TESTDIR"
 
-echo "=== Test Summary ==="
+if command -v log_info &> /dev/null; then
+  log_info "Test Summary"
+else
+  echo "=== Test Summary ==="
+fi
+
 for result in "${RESULTS[@]}"; do
   echo "$result"
 done
 
 if echo "${RESULTS[@]}" | grep -q "✗"; then
-  echo ""
-  echo "Some tests failed!"
+  if command -v log_error &> /dev/null; then
+    log_error "Some tests failed!"
+  else
+    echo ""
+    echo "Some tests failed!"
+  fi
   exit 1
 else
-  echo ""
-  echo "All tests passed!"
+  if command -v log_info &> /dev/null; then
+    log_info "All tests passed!"
+  else
+    echo ""
+    echo "All tests passed!"
+  fi
 fi

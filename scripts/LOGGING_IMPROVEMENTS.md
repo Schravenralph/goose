@@ -253,14 +253,48 @@ The logging overhead is minimal:
 - Metrics collection: ~5-10ms per script execution
 - Total overhead: <1% of execution time
 
+## Alerting
+
+The logging infrastructure now includes built-in alerting capabilities. See [ALERT_RUNBOOK.md](./ALERT_RUNBOOK.md) for detailed information.
+
+### Quick Start
+
+1. **Configure alerts** by copying the example config:
+   ```bash
+   cp scripts/alert-config.json.example scripts/alert-config.json
+   # Edit alert-config.json to enable your preferred channels
+   ```
+
+2. **Alerts are automatically triggered** when scripts using `logging-utils.sh` fail or encounter errors.
+
+3. **Monitor for alerts** using the monitoring script:
+   ```bash
+   ./scripts/monitor-alerts.sh
+   ```
+
+### Alert Types
+
+- **Script Failures**: Automatic alerts when scripts exit with non-zero codes
+- **High Error Count**: Alerts when error count exceeds threshold
+- **Performance Degradation**: Alerts when script duration exceeds threshold
+- **Repeated Failures**: Alerts when same script fails multiple times
+
+### Alert Channels
+
+- Email (via `mail` or `sendmail`)
+- Slack (via webhook)
+- Generic webhooks
+- PagerDuty
+
+See [ALERT_RUNBOOK.md](./ALERT_RUNBOOK.md) for configuration details.
+
 ## Future Enhancements
 
 Potential future improvements:
 1. **Distributed Tracing**: Integration with OpenTelemetry
 2. **Real-time Metrics**: Push metrics to Prometheus endpoint
 3. **Log Aggregation**: Automatic forwarding to centralized logging
-4. **Alerting**: Built-in alerting for critical conditions
-5. **Dashboards**: Pre-built Grafana dashboards
+4. **Dashboards**: Pre-built Grafana dashboards
 
 ## Migration Guide
 

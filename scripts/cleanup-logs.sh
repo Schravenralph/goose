@@ -115,9 +115,29 @@ if [[ "$DRY_RUN" != "true" ]]; then
 fi
 
 # Calculate cutoff timestamps (seconds since epoch)
-CUTOFF_TIME=$(date -d "$RETENTION_DAYS days ago" +%s 2>/dev/null || date -v-${RETENTION_DAYS}d +%s 2>/dev/null || echo "0")
-ARCHIVE_CUTOFF_TIME=$(date -d "$ARCHIVE_RETENTION_DAYS days ago" +%s 2>/dev/null || date -v-${ARCHIVE_RETENTION_DAYS}d +%s 2>/dev/null || echo "0")
-METRICS_CUTOFF_TIME=$(date -d "$METRICS_RETENTION_DAYS days ago" +%s 2>/dev/null || date -v-${METRICS_RETENTION_DAYS}d +%s 2>/dev/null || echo "0")
+# Use portable date calculation: current time minus days in seconds
+CURRENT_TIME=$(date +%s 2>/dev/null || echo "0")
+if [[ "$CURRENT_TIME" != "0" ]]; then
+    # Calculate seconds in days
+    SECONDS_PER_DAY=86400
+    CUTOFF_TIME=$((CURRENT_TIME - (RETENTION_DAYS * SECONDS_PER_DAY)))
+    ARCHIVE_CUTOFF_TIME=$((CURRENT_TIME - (ARCHIVE_RETENTION_DAYS * SECONDS_PER_DAY)))
+    METRICS_CUTOFF_TIME=$((CURRENT_TIME - (METRICS_RETENTION_DAYS * SECONDS_PER_DAY)))
+else
+    # Fallback: try date command variants
+    CUTOFF_TIME=$(date -d "$RETENTION_DAYS days ago" +%s 2>/dev/null || date -v-${RETENTION_DAYS}d +%s 2>/dev/null || echo "0")
+    ARCHIVE_CUTOFF_TIME=$(date -d "$ARCHIVE_RETENTION_DAYS days ago" +%s 2>/dev/null || date -v-${ARCHIVE_RETENTION_DAYS}d +%s 2>/dev/null || echo "0")
+    METRICS_CUTOFF_TIME=$(date -d "$METRICS_RETENTION_DAYS days ago" +%s 2>/dev/null || date -v-${METRICS_RETENTION_DAYS}d +%s 2>/dev/null || echo "0")
+    
+    if [[ "$CUTOFF_TIME" == "0" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Unable to calculate cutoff times. Date command not compatible."
+        else
+            echo "Error: Unable to calculate cutoff times. Date command not compatible." >&2
+        fi
+        exit 1
+    fi
+fi
 
 # Convert MB to bytes
 MAX_LOG_SIZE_BYTES=$((MAX_LOG_SIZE_MB * 1024 * 1024))
