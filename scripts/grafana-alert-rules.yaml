@@ -1,0 +1,125 @@
+groups:
+  - name: goose_scripts_alerts
+    interval: 30s
+    rules:
+      - uid: goose_high_error_rate
+        title: High Error Rate Detected
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: ${datasource}
+            model:
+              expr: |
+                (
+                  sum(rate(goose_error_count{script=~".+"}[5m])) 
+                  / 
+                  sum(rate(goose_execution_duration_seconds{script=~".+"}[5m]))
+                ) > 0.1
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: "High error rate detected in Goose scripts"
+          description: "Error rate is above 10% for the last 5 minutes"
+        labels:
+          severity: warning
+          component: goose-scripts
+
+      - uid: goose_repeated_failures
+        title: Repeated Script Failures
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: ${datasource}
+            model:
+              expr: |
+                sum(increase(goose_exit_code{script=~".+", exit_code!="0"}[10m])) > 5
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 10m
+        annotations:
+          summary: "Multiple script failures detected"
+          description: "More than 5 script failures in the last 10 minutes"
+        labels:
+          severity: critical
+          component: goose-scripts
+
+      - uid: goose_performance_degradation
+        title: Performance Degradation
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: ${datasource}
+            model:
+              expr: |
+                avg(goose_execution_duration_seconds{script=~".+"}) 
+                > 
+                (avg_over_time(goose_execution_duration_seconds{script=~".+"}[30m]) * 1.5)
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 15m
+        annotations:
+          summary: "Script execution time has increased significantly"
+          description: "Average execution duration is 50% higher than the 30-minute average"
+        labels:
+          severity: warning
+          component: goose-scripts
+
+      - uid: goose_low_success_rate
+        title: Low Success Rate
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: ${datasource}
+            model:
+              expr: |
+                avg(goose_success_rate{script=~".+"}) < 0.8
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 10m
+        annotations:
+          summary: "Success rate is below 80%"
+          description: "Overall success rate has dropped below 80% for the last 10 minutes"
+        labels:
+          severity: warning
+          component: goose-scripts
+
+      - uid: goose_no_executions
+        title: No Script Executions
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: ${datasource}
+            model:
+              expr: |
+                count(goose_execution_duration_seconds{script=~".+"}) == 0
+              refId: A
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1h
+        annotations:
+          summary: "No script executions detected"
+          description: "No script executions have been recorded in the last hour"
+        labels:
+          severity: info
+          component: goose-scripts
+
