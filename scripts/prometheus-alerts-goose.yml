@@ -1,0 +1,112 @@
+# Prometheus alerting rules for Goose monitoring
+# Copy this file to /etc/prometheus/rules/prometheus-alerts-goose.yml
+# Add to prometheus.yml:
+#   rule_files:
+#     - "/etc/prometheus/rules/prometheus-alerts-goose.yml"
+
+groups:
+  - name: goose_script_alerts
+    interval: 30s
+    rules:
+      # Alert when script execution fails
+      - alert: GooseScriptFailure
+        expr: goose_exit_code{script!=""} != 0
+        for: 5m
+        labels:
+          severity: critical
+          component: goose-scripts
+        annotations:
+          summary: "Goose script execution failed"
+          description: "Script {{ $labels.script }} has failed (exit code: {{ $value }}) for more than 5 minutes."
+
+      # Alert when script execution duration is too high
+      - alert: GooseScriptSlowExecution
+        expr: goose_execution_duration_seconds{script!=""} > 300
+        for: 10m
+        labels:
+          severity: warning
+          component: goose-scripts
+        annotations:
+          summary: "Goose script execution is slow"
+          description: "Script {{ $labels.script }} is taking longer than 5 minutes to execute (current: {{ $value }}s)."
+
+      # Alert when clippy errors are detected
+      - alert: GooseClippyErrors
+        expr: goose_clippy_errors{script!=""} > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: goose-scripts
+        annotations:
+          summary: "Clippy errors detected"
+          description: "Script {{ $labels.script }} has {{ $value }} clippy error(s)."
+
+      # Alert when clippy warnings exceed threshold
+      - alert: GooseClippyWarningsHigh
+        expr: goose_clippy_warnings{script!=""} > 50
+        for: 10m
+        labels:
+          severity: warning
+          component: goose-scripts
+        annotations:
+          summary: "High number of clippy warnings"
+          description: "Script {{ $labels.script }} has {{ $value }} clippy warnings (threshold: 50)."
+
+      # Alert when Prometheus exporter is down
+      - alert: GoosePrometheusExporterDown
+        expr: up{job="goose-metrics"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: monitoring
+        annotations:
+          summary: "Goose Prometheus exporter is down"
+          description: "The Goose Prometheus exporter has been down for more than 2 minutes."
+
+      # Alert when no metrics are being exported
+      - alert: GooseNoMetricsExported
+        expr: count(goose_execution_duration_seconds) == 0
+        for: 1h
+        labels:
+          severity: warning
+          component: monitoring
+        annotations:
+          summary: "No Goose metrics exported"
+          description: "No Goose metrics have been exported in the last hour. Check if scripts are running."
+
+      # Alert when metrics export latency is high
+      - alert: GooseMetricsExportLatency
+        expr: goose_export_latency_seconds > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: monitoring
+        annotations:
+          summary: "High metrics export latency"
+          description: "Metrics export is taking {{ $value }}s (threshold: 10s)."
+
+  - name: goose_system_alerts
+    interval: 30s
+    rules:
+      # Alert when log directory disk usage is high
+      - alert: GooseLogDirectoryFull
+        expr: (node_filesystem_avail_bytes{mountpoint="/tmp"} / node_filesystem_size_bytes{mountpoint="/tmp"}) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Goose log directory disk space low"
+          description: "Disk space for /tmp (where Goose logs are stored) is below 10%."
+
+      # Alert when too many metrics files accumulate
+      - alert: GooseMetricsFilesAccumulation
+        expr: goose_metrics_files_total > 10000
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Too many metrics files"
+          description: "There are {{ $value }} metrics files. Consider setting up log rotation."
+

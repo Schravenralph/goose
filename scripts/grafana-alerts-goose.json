@@ -1,0 +1,144 @@
+{
+  "name": "Goose Monitoring Alerts",
+  "description": "Alerting rules for Goose script monitoring",
+  "version": 1,
+  "alerts": [
+    {
+      "name": "Script Execution Failure",
+      "condition": {
+        "query": {
+          "queryType": "",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "goose_exit_code != 0"
+        },
+        "reducer": {
+          "type": "last",
+          "params": []
+        },
+        "evaluator": {
+          "params": [0],
+          "type": "gt"
+        }
+      },
+      "executionErrorState": "alerting",
+      "for": "5m",
+      "noDataState": "no_data",
+      "notifications": [],
+      "alertRuleTags": {
+        "severity": "critical",
+        "component": "goose-scripts"
+      },
+      "annotations": {
+        "summary": "Goose script execution failed",
+        "description": "A Goose script has failed (exit code != 0) for more than 5 minutes."
+      }
+    },
+    {
+      "name": "Slow Script Execution",
+      "condition": {
+        "query": {
+          "queryType": "",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "goose_execution_duration_seconds > 300"
+        },
+        "reducer": {
+          "type": "last",
+          "params": []
+        },
+        "evaluator": {
+          "params": [300],
+          "type": "gt"
+        }
+      },
+      "executionErrorState": "alerting",
+      "for": "10m",
+      "noDataState": "no_data",
+      "notifications": [],
+      "alertRuleTags": {
+        "severity": "warning",
+        "component": "goose-scripts"
+      },
+      "annotations": {
+        "summary": "Goose script execution is slow",
+        "description": "A Goose script is taking longer than 5 minutes to execute."
+      }
+    },
+    {
+      "name": "Clippy Errors Detected",
+      "condition": {
+        "query": {
+          "queryType": "",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "goose_clippy_errors > 0"
+        },
+        "reducer": {
+          "type": "last",
+          "params": []
+        },
+        "evaluator": {
+          "params": [0],
+          "type": "gt"
+        }
+      },
+      "executionErrorState": "alerting",
+      "for": "5m",
+      "noDataState": "no_data",
+      "notifications": [],
+      "alertRuleTags": {
+        "severity": "warning",
+        "component": "goose-scripts"
+      },
+      "annotations": {
+        "summary": "Clippy errors detected",
+        "description": "A Goose script has clippy errors."
+      }
+    },
+    {
+      "name": "Prometheus Exporter Down",
+      "condition": {
+        "query": {
+          "queryType": "",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "up{job=\"goose-metrics\"} == 0"
+        },
+        "reducer": {
+          "type": "last",
+          "params": []
+        },
+        "evaluator": {
+          "params": [0],
+          "type": "eq"
+        }
+      },
+      "executionErrorState": "alerting",
+      "for": "2m",
+      "noDataState": "alerting",
+      "notifications": [],
+      "alertRuleTags": {
+        "severity": "critical",
+        "component": "monitoring"
+      },
+      "annotations": {
+        "summary": "Goose Prometheus exporter is down",
+        "description": "The Goose Prometheus exporter has been down for more than 2 minutes."
+      }
+    }
+  ]
+}
+

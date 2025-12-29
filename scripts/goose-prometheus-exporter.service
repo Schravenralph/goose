@@ -1,0 +1,32 @@
+[Unit]
+Description=Goose Prometheus Metrics Exporter
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=goose
+Group=goose
+WorkingDirectory=/home/goose/goose/scripts
+ExecStart=/home/goose/goose/scripts/prometheus-exporter.sh --port 9090 --metrics-dir /tmp/goose-logs
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goose-prometheus-exporter
+
+# Environment variables
+Environment="PROMETHEUS_EXPORTER_PORT=9090"
+Environment="PROMETHEUS_METRICS_DIR=/tmp/goose-logs"
+Environment="LOG_DIR=/tmp/goose-logs"
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp/goose-logs
+
+[Install]
+WantedBy=multi-user.target
+

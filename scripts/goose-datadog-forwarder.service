@@ -1,0 +1,33 @@
+[Unit]
+Description=Goose Datadog Log and Metrics Forwarder
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=goose
+Group=goose
+WorkingDirectory=/home/goose/goose/scripts
+EnvironmentFile=-/etc/goose-monitoring/datadog.env
+ExecStart=/home/goose/goose/scripts/datadog-forwarder.sh --interval 60
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goose-datadog-forwarder
+
+# Environment variables (can be overridden by EnvironmentFile)
+Environment="LOG_DIR=/tmp/goose-logs"
+Environment="METRICS_DIR=/tmp/goose-logs"
+Environment="DD_SITE=datadoghq.com"
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp/goose-logs
+
+[Install]
+WantedBy=multi-user.target
+
