@@ -19,9 +19,27 @@ import pandas as pd
 from pathlib import Path
 import sys
 
+# Add parent directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
+
 
 def find_aggregate_metrics_files(benchmark_dir: Path) -> list:
     """Find all aggregate_metrics.csv files in model subdirectories."""
+    logging_utils.start_span("find_aggregate_metrics_files")
     csv_files = []
     
     # Look for model directories in the benchmark directory
@@ -34,6 +52,8 @@ def find_aggregate_metrics_files(benchmark_dir: Path) -> list:
                 if csv_path.exists():
                     csv_files.append(csv_path)
     
+    logging_utils.record_metric("csv_files_found", len(csv_files))
+    logging_utils.end_span()
     return csv_files
 
 
@@ -43,6 +63,7 @@ def process_csv_files(csv_files: list) -> tuple:
     1. A union of all CSVs with selected columns
     2. A leaderboard grouping by provider and model_name with averaged metrics
     """
+    logging_utils.start_span("process_csv_files")
     selected_columns = [
         'provider', 
         'model_name', 
@@ -65,7 +86,7 @@ def process_csv_files(csv_files: list) -> tuple:
             # Check which selected columns are available
             missing_columns = [col for col in selected_columns if col not in df.columns]
             if missing_columns:
-                print(f"Warning: {csv_file} is missing columns: {missing_columns}")
+                logging_utils.log_warn(f"{csv_file} is missing columns: {missing_columns}")
                 
                 # For missing columns, add them with NaN values
                 for col in missing_columns:
@@ -81,7 +102,7 @@ def process_csv_files(csv_files: list) -> tuple:
             all_data.append(df_subset)
             
         except Exception as e:
-            print(f"Error processing {csv_file}: {str(e)}")
+            logging_utils.log_error(f"Error processing {csv_file}: {str(e)}")
     
     if not all_data:
         raise ValueError("No valid CSV files found with required columns")
@@ -105,6 +126,9 @@ def process_csv_files(csv_files: list) -> tuple:
     # Sort by score_mean in descending order (highest scores first)
     leaderboard_df = leaderboard_df.sort_values('score_mean', ascending=False)
     
+    logging_utils.record_metric("union_rows", len(union_df))
+    logging_utils.record_metric("leaderboard_rows", len(leaderboard_df))
+    logging_utils.end_span()
     return union_df, leaderboard_df
 
 
@@ -133,9 +157,10 @@ def main():
     
     args = parser.parse_args()
     
+    logging_utils.start_span("main")
     benchmark_dir = Path(args.benchmark_dir)
     if not benchmark_dir.exists() or not benchmark_dir.is_dir():
-        print(f"Error: Benchmark directory {benchmark_dir} does not exist or is not a directory")
+        logging_utils.log_error(f"Benchmark directory {benchmark_dir} does not exist or is not a directory")
         sys.exit(1)
     
     try:
@@ -143,10 +168,10 @@ def main():
         csv_files = find_aggregate_metrics_files(benchmark_dir)
         
         if not csv_files:
-            print(f"No aggregate_metrics.csv files found in any model directory under {benchmark_dir}")
+            logging_utils.log_error(f"No aggregate_metrics.csv files found in any model directory under {benchmark_dir}")
             sys.exit(1)
         
-        print(f"Found {len(csv_files)} aggregate_metrics.csv files in model directories")
+        logging_utils.log_info(f"Found {len(csv_files)} aggregate_metrics.csv files in model directories")
         
         # Process and create the union and leaderboard dataframes
         union_df, leaderboard_df = process_csv_files(csv_files)
@@ -154,29 +179,38 @@ def main():
         # Save the union CSV to the benchmark directory
         union_output_path = benchmark_dir / args.union_output
         union_df.to_csv(union_output_path, index=False)
-        print(f"Union CSV with all metrics saved to: {union_output_path}")
+        logging_utils.log_info(f"Union CSV with all metrics saved to: {union_output_path}")
         
         # Save the leaderboard CSV to the benchmark directory
         leaderboard_output_path = benchmark_dir / args.leaderboard_output
         leaderboard_df.to_csv(leaderboard_output_path, index=False)
-        print(f"Leaderboard CSV with averaged metrics saved to: {leaderboard_output_path}")
+        logging_utils.log_info(f"Leaderboard CSV with averaged metrics saved to: {leaderboard_output_path}")
         
         # Print a summary of the leaderboard
-        print("\nLeaderboard Summary:")
+        logging_utils.log_info("Leaderboard Summary:")
         pd.set_option('display.max_columns', None)  # Show all columns
-        print(leaderboard_df.to_string(index=False))
+        summary = leaderboard_df.to_string(index=False)
+        print(summary)
+        logging_utils.log_debug(f"Leaderboard summary:\n{summary}")
         
         # Highlight models with server errors
         if 'server_error_mean' in leaderboard_df.columns:
             models_with_errors = leaderboard_df[leaderboard_df['server_error_mean'] > 0]
             if not models_with_errors.empty:
-                print("\nWARNING - Models with server errors detected:")
+                logging_utils.log_warn("Models with server errors detected:")
                 for _, row in models_with_errors.iterrows():
-                    print(f"  * {row['provider']} {row['model_name']} - {row['server_error_mean']*100:.1f}% of evaluations had server errors")
+                    error_msg = f"{row['provider']} {row['model_name']} - {row['server_error_mean']*100:.1f}% of evaluations had server errors"
+                    logging_utils.log_warn(f"  * {error_msg}")
+                    print(f"  * {error_msg}")
+                logging_utils.log_warn("These models may need to be re-run to get accurate results.")
                 print("\nThese models may need to be re-run to get accurate results.")
         
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=0)
+        
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logging_utils.log_error(f"Error: {str(e)}")
+        logging_utils.write_metrics(exit_code=1)
         sys.exit(1)
 
 

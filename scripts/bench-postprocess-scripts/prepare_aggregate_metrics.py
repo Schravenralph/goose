@@ -21,6 +21,24 @@ import pandas as pd
 from pathlib import Path
 import sys
 
+# Add parent directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def log_debug(self, *args, **kwargs): pass
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
+
 def extract_provider_model(model_dir):
     """Extract provider and model name from directory name."""
     dir_name = model_dir.name
@@ -66,7 +84,7 @@ def check_for_errors_in_session(session_file):
         
         return error_found, error_messages
     except Exception as e:
-        print(f"Error checking session file {session_file}: {str(e)}")
+        logging_utils.log_error(f"Error checking session file {session_file}: {str(e)}")
         return False, []
 
 def extract_metrics_from_eval_file(eval_file, provider, model_name, session_files):
@@ -84,7 +102,7 @@ def extract_metrics_from_eval_file(eval_file, provider, model_name, session_file
                 break
         
         if run_index == -1 or run_index + 2 >= len(path_parts):
-            print(f"Warning: Could not determine eval suite and name from {eval_file}")
+            logging_utils.log_warn(f"Could not determine eval suite and name from {eval_file}")
             return None
         
         run_number = path_parts[run_index].split('-')[1]  # Extract "0" from "run-0"
@@ -173,21 +191,23 @@ def extract_metrics_from_eval_file(eval_file, provider, model_name, session_file
             
             return row
         else:
-            print(f"Warning: Unexpected format in {eval_file}")
+            logging_utils.log_warn(f"Unexpected format in {eval_file}")
             return None
     
     except Exception as e:
-        print(f"Error processing {eval_file}: {str(e)}")
+        logging_utils.log_error(f"Error processing {eval_file}: {str(e)}")
         return None
 
 def process_model_directory(model_dir):
     """Process a model directory to create aggregate_metrics.csv."""
+    logging_utils.start_span(f"process_model_directory_{model_dir.name}")
     provider, model_name = extract_provider_model(model_dir)
     
     # Find all eval results files
     eval_files = find_eval_results_files(model_dir)
     if not eval_files:
-        print(f"No eval-results.json files found in {model_dir}")
+        logging_utils.log_warn(f"No eval-results.json files found in {model_dir}")
+        logging_utils.end_span()
         return False
     
     # Find all session files for error checking
@@ -201,7 +221,8 @@ def process_model_directory(model_dir):
             rows.append(row)
     
     if not rows:
-        print(f"No valid metrics extracted from {model_dir}")
+        logging_utils.log_warn(f"No valid metrics extracted from {model_dir}")
+        logging_utils.end_span()
         return False
     
     # Create a dataframe from all rows
@@ -225,7 +246,7 @@ def process_model_directory(model_dir):
         for col in numeric_cols:
             aggregate_df = aggregate_df.rename(columns={col: f"{col}_mean"})
     else:
-        print(f"Warning: No numeric metrics found in {model_dir}")
+        logging_utils.log_warn(f"No numeric metrics found in {model_dir}")
         # Create a minimal dataframe with just the grouping columns
         aggregate_df = combined_df[group_by_cols].drop_duplicates()
     
@@ -253,11 +274,17 @@ def process_model_directory(model_dir):
     if 'server_error_mean' in aggregate_df.columns:
         error_count = len(aggregate_df[aggregate_df['server_error_mean'] > 0])
         total_count = len(aggregate_df)
-        print(f"Saved aggregate metrics to {csv_path} with {len(aggregate_df)} rows " +
-              f"({error_count}/{total_count} evals had server errors)")
+        msg = f"Saved aggregate metrics to {csv_path} with {len(aggregate_df)} rows ({error_count}/{total_count} evals had server errors)"
+        logging_utils.log_info(msg)
+        print(msg)
+        logging_utils.record_metric("server_errors", error_count, model_dir=str(model_dir))
     else:
-        print(f"Saved aggregate metrics to {csv_path} with {len(aggregate_df)} rows")
+        msg = f"Saved aggregate metrics to {csv_path} with {len(aggregate_df)} rows"
+        logging_utils.log_info(msg)
+        print(msg)
     
+    logging_utils.record_metric("aggregate_rows", len(aggregate_df), model_dir=str(model_dir))
+    logging_utils.end_span()
     return True
 
 def main():
@@ -273,10 +300,11 @@ def main():
     
     args = parser.parse_args()
     
+    logging_utils.start_span("main")
     # Convert path to Path object and validate it exists
     benchmark_dir = Path(args.benchmark_dir)
     if not benchmark_dir.exists() or not benchmark_dir.is_dir():
-        print(f"Error: Benchmark directory {benchmark_dir} does not exist or is not a directory")
+        logging_utils.log_error(f"Benchmark directory {benchmark_dir} does not exist or is not a directory")
         sys.exit(1)
     
     success_count = 0
@@ -288,12 +316,22 @@ def main():
                 success_count += 1
     
     if success_count == 0:
-        print("No aggregate_metrics.csv files were created")
+        logging_utils.log_error("No aggregate_metrics.csv files were created")
+        logging_utils.write_metrics(exit_code=1)
         sys.exit(1)
     
-    print(f"Successfully created aggregate_metrics.csv files for {success_count} model directories")
-    print("You can now run generate_leaderboard.py to create the final leaderboard.")
-    print("Note: The server_error_mean column indicates the average rate of server errors across evaluations.")
+    logging_utils.record_metric("model_directories_processed", success_count)
+    msg1 = f"Successfully created aggregate_metrics.csv files for {success_count} model directories"
+    msg2 = "You can now run generate_leaderboard.py to create the final leaderboard."
+    msg3 = "Note: The server_error_mean column indicates the average rate of server errors across evaluations."
+    logging_utils.log_info(msg1)
+    logging_utils.log_info(msg2)
+    print(msg1)
+    print(msg2)
+    print(msg3)
+    
+    logging_utils.end_span()
+    logging_utils.write_metrics(exit_code=0)
 
 if __name__ == "__main__":
     main()

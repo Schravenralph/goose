@@ -14,6 +14,24 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import argparse
 
+# Add parent directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def log_debug(self, *args, **kwargs): pass
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
+
 
 # Default metrics directory
 DEFAULT_METRICS_DIR = "/tmp/goose-logs"
@@ -49,6 +67,7 @@ class MetricsHandler(SimpleHTTPRequestHandler):
         dashboard_path = script_dir / 'metrics-dashboard.html'
         
         if not dashboard_path.exists():
+            logging_utils.log_error("Dashboard not found", path=str(dashboard_path))
             self.send_error(404, "Dashboard not found")
             return
         
@@ -61,7 +80,9 @@ class MetricsHandler(SimpleHTTPRequestHandler):
             self.send_header('Content-length', str(len(content)))
             self.end_headers()
             self.wfile.write(content)
+            logging_utils.log_debug("Served dashboard", path=str(dashboard_path))
         except Exception as e:
+            logging_utils.log_error(f"Error serving dashboard: {str(e)}", path=str(dashboard_path))
             self.send_error(500, f"Error serving dashboard: {str(e)}")
     
     def serve_file(self, path):
@@ -98,7 +119,9 @@ class MetricsHandler(SimpleHTTPRequestHandler):
             self.send_header('Content-length', str(len(content)))
             self.end_headers()
             self.wfile.write(content)
+            logging_utils.log_debug("Served file", path=str(file_path))
         except Exception as e:
+            logging_utils.log_error(f"Error serving file: {str(e)}", path=str(file_path))
             self.send_error(500, f"Error serving file: {str(e)}")
     
     def handle_metrics_api(self, query_string):
@@ -121,7 +144,9 @@ class MetricsHandler(SimpleHTTPRequestHandler):
             self.send_header('Content-length', str(len(response)))
             self.end_headers()
             self.wfile.write(response)
+            logging_utils.log_debug("Served metrics API", query_string=query_string)
         except Exception as e:
+            logging_utils.log_error(f"Error handling metrics API: {str(e)}", query_string=query_string)
             error_response = json.dumps({'error': str(e)}).encode('utf-8')
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
@@ -131,7 +156,10 @@ class MetricsHandler(SimpleHTTPRequestHandler):
     
     def load_metrics(self, start_date=None, end_date=None, script_name=None):
         """Load and aggregate metrics from JSON files."""
+        logging_utils.start_span("load_metrics")
         if not self.metrics_dir.exists():
+            logging_utils.log_warn("Metrics directory does not exist", metrics_dir=str(self.metrics_dir))
+            logging_utils.end_span()
             return {
                 'totalRuns': 0,
                 'successRate': 0,
@@ -215,6 +243,7 @@ class MetricsHandler(SimpleHTTPRequestHandler):
                     all_metrics.append(metric)
             except Exception as e:
                 # Skip files that can't be parsed
+                logging_utils.log_debug(f"Skipping unparseable metrics file: {metrics_file}", error=str(e))
                 continue
         
         # Sort by start_time (most recent first)
@@ -289,6 +318,9 @@ class MetricsHandler(SimpleHTTPRequestHandler):
             except (ValueError, TypeError) as e:
                 continue
         
+        logging_utils.record_metric("metrics_files_loaded", len(all_metrics))
+        logging_utils.end_span()
+        
         return {
             'totalRuns': total_runs,
             'successRate': round(success_rate, 2),
@@ -319,9 +351,10 @@ def main():
     
     args = parser.parse_args()
     
+    logging_utils.start_span("main")
     metrics_dir = Path(args.metrics_dir)
     if not metrics_dir.exists():
-        print(f"Warning: Metrics directory {metrics_dir} does not exist. Creating it...")
+        logging_utils.log_warn(f"Metrics directory {metrics_dir} does not exist. Creating it...")
         metrics_dir.mkdir(parents=True, exist_ok=True)
     
     handler_class = create_handler_class(str(metrics_dir))
@@ -329,17 +362,32 @@ def main():
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, handler_class)
     
-    print(f"\n📊 Goose Metrics Dashboard Server")
-    print(f"   Metrics directory: {metrics_dir}")
-    print(f"   Server: http://{args.host}:{args.port}")
-    print(f"   API endpoint: http://{args.host}:{args.port}/api/metrics")
-    print(f"   Press Ctrl+C to stop\n")
+    msg1 = f"\n📊 Goose Metrics Dashboard Server"
+    msg2 = f"   Metrics directory: {metrics_dir}"
+    msg3 = f"   Server: http://{args.host}:{args.port}"
+    msg4 = f"   API endpoint: http://{args.host}:{args.port}/api/metrics"
+    msg5 = f"   Press Ctrl+C to stop\n"
+    
+    logging_utils.log_info("Starting metrics dashboard server", 
+                          metrics_dir=str(metrics_dir),
+                          host=args.host,
+                          port=args.port)
+    print(msg1)
+    print(msg2)
+    print(msg3)
+    print(msg4)
+    print(msg5)
+    
+    logging_utils.record_metric("server_started", 1)
     
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
+        logging_utils.log_info("Shutting down server...")
         print("\n🛑 Shutting down server...")
         httpd.shutdown()
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=0)
 
 
 if __name__ == '__main__':

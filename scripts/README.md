@@ -4,7 +4,7 @@ This directory contains scripts for running benchmarks, tests, and other automat
 
 ## Structured Logging
 
-All scripts in this directory support structured logging through `logging-utils.sh`. This provides:
+All scripts in this directory support structured logging through `logging-utils.sh` (for bash scripts) and `logging_utils.py` (for Python scripts). This provides:
 
 - **JSON Logging**: Structured JSON logs with timestamps, trace IDs, and log levels
 - **Metrics Collection**: Automatic collection of execution metrics
@@ -14,6 +14,11 @@ All scripts in this directory support structured logging through `logging-utils.
 ### Scripts with Structured Logging
 
 The following scripts have been enhanced with structured logging:
+
+**Python Scripts:**
+- `bench-postprocess-scripts/generate_leaderboard.py` - Generate leaderboard from benchmark results
+- `bench-postprocess-scripts/prepare_aggregate_metrics.py` - Prepare aggregate metrics from eval results
+- `serve-metrics-dashboard.py` - Metrics dashboard server
 
 **Linting & Code Quality:**
 - `clippy-lint.sh` - Clippy linting with structured logging
@@ -64,9 +69,49 @@ cat /tmp/goose-logs/*.jsonl | jq 'select(.level == "ERROR")'
 cat /tmp/goose-logs/*-metrics-*.json | jq '.'
 ```
 
+### Python Scripts Integration
+
+Python scripts can use structured logging by importing `logging_utils`:
+
+```python
+import sys
+from pathlib import Path
+
+# Add parent directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
+
+# Usage examples:
+logging_utils.log_info("Processing started", items=100)
+logging_utils.start_span("process_data")
+# ... do work ...
+logging_utils.end_span()
+logging_utils.record_metric("items_processed", 100)
+logging_utils.write_metrics(exit_code=0)
+```
+
+The `logging_utils` module automatically:
+- Generates a trace ID for the script execution
+- Initializes log and metrics files
+- Captures git context and project version
+- Writes metrics on script exit (via atexit handler)
+
 ### Backward Compatibility
 
-All scripts maintain backward compatibility. If `logging-utils.sh` is not available, scripts will fall back to standard `echo` output. Logging functions are checked with `command -v` before use.
+All scripts maintain backward compatibility. If `logging-utils.sh` is not available, bash scripts will fall back to standard `echo` output. Python scripts include a fallback `DummyLogger` class that provides the same interface but uses standard print statements.
 
 For more details, see `LOGGING_IMPROVEMENTS.md`.
 
