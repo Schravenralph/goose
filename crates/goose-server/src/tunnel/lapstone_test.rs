@@ -75,6 +75,7 @@ async fn test_tunnel_end_to_end() {
     let port = find_available_port().await;
     let server_handle = start_test_http_server(port).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    println!("[DEBUG] Sleep 200ms completed after starting test HTTP server on port {} (end-to-end test)", port);
 
     let handle = Arc::new(RwLock::new(None));
     let (restart_tx, _restart_rx) = mpsc::channel(1);
@@ -125,6 +126,7 @@ async fn test_tunnel_post_request() {
     let port = find_available_port().await;
     let server_handle = start_test_http_server(port).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    println!("[DEBUG] Sleep 200ms completed after starting test HTTP server on port {} (POST test)", port);
 
     let handle = Arc::new(RwLock::new(None));
     let (restart_tx, _restart_rx) = mpsc::channel(1);

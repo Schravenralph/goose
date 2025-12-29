@@ -3,6 +3,14 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="run-benchmarks"
+
+# Source logging utilities
+if [[ -f "$SCRIPT_DIR/logging-utils.sh" ]]; then
+    source "$SCRIPT_DIR/logging-utils.sh"
+fi
+
 # Display usage information
 function show_usage() {
   echo "Usage: $0 [options]"
@@ -68,15 +76,34 @@ done
 
 # Validate required parameters
 if [[ -z "$PROVIDER_MODELS" ]]; then
-  echo "Error: Provider-model pairs must be specified"
+  if command -v log_error &> /dev/null; then
+    log_error "Provider-model pairs must be specified"
+  else
+    echo "Error: Provider-model pairs must be specified"
+  fi
   show_usage
   exit 1
 fi
 
 if [[ -z "$SUITES" ]]; then
-  echo "Error: Benchmark suites must be specified"
+  if command -v log_error &> /dev/null; then
+    log_error "Benchmark suites must be specified"
+  else
+    echo "Error: Benchmark suites must be specified"
+  fi
   show_usage
   exit 1
+fi
+
+# Initialize logging
+if command -v log_info &> /dev/null; then
+  log_info "🚀 Starting benchmark run"
+  log_info "Configuration" "provider_models=$PROVIDER_MODELS" "suites=$SUITES" "output_dir=$OUTPUT_DIR" "debug_mode=$DEBUG_MODE" "toolshim=$TOOLSHIM"
+  record_metric "provider_models" "$PROVIDER_MODELS"
+  record_metric "suites" "$SUITES"
+  record_metric "output_dir" "$OUTPUT_DIR"
+  record_metric "debug_mode" "$DEBUG_MODE"
+  record_metric "toolshim_enabled" "$TOOLSHIM"
 fi
 
 # Create output directory
@@ -105,17 +132,37 @@ GOOSE_CMD="goose"
 if [ "$DEBUG_MODE" = true ]; then
   if [ -f "./target/debug/goose" ]; then
     GOOSE_CMD="./target/debug/goose"
-    echo "Using debug binary: $GOOSE_CMD"
+    if command -v log_info &> /dev/null; then
+      log_info "Using debug binary: $GOOSE_CMD"
+    else
+      echo "Using debug binary: $GOOSE_CMD"
+    fi
   else
-    echo "Warning: Debug binary not found at ./target/debug/goose. Falling back to system-installed goose."
+    if command -v log_warn &> /dev/null; then
+      log_warn "Debug binary not found at ./target/debug/goose. Falling back to system-installed goose."
+    else
+      echo "Warning: Debug binary not found at ./target/debug/goose. Falling back to system-installed goose."
+    fi
   fi
 else
   if [ -f "./target/release/goose" ]; then
     GOOSE_CMD="./target/release/goose"
-    echo "Using release binary: $GOOSE_CMD"
+    if command -v log_info &> /dev/null; then
+      log_info "Using release binary: $GOOSE_CMD"
+    else
+      echo "Using release binary: $GOOSE_CMD"
+    fi
   else
-    echo "Warning: Release binary not found at ./target/release/goose. Falling back to system-installed goose."
+    if command -v log_warn &> /dev/null; then
+      log_warn "Release binary not found at ./target/release/goose. Falling back to system-installed goose."
+    else
+      echo "Warning: Release binary not found at ./target/release/goose. Falling back to system-installed goose."
+    fi
   fi
+fi
+
+if command -v record_metric &> /dev/null; then
+  record_metric "goose_binary" "$GOOSE_CMD"
 fi
 
 # Parse provider:model pairs
@@ -139,18 +186,29 @@ done
 OVERALL_SUCCESS=true
 COUNT=${#PROVIDERS[@]}
 
-echo "Running benchmarks for $COUNT provider:model pairs..."
-echo "Benchmark suites: $SUITES"
-echo ""
+if command -v log_info &> /dev/null; then
+  log_info "Running benchmarks" "provider_model_pairs=$COUNT" "suites=$SUITES"
+  record_metric "total_provider_model_pairs" "$COUNT"
+  increment_counter "benchmark_runs"
+else
+  echo "Running benchmarks for $COUNT provider:model pairs..."
+  echo "Benchmark suites: $SUITES"
+  echo ""
+fi
 
 # Loop through each provider-model pair
 for ((i=0; i<$COUNT; i++)); do
   provider="${PROVIDERS[i]}"
   model="${MODELS[i]}"
   
-  echo "=========================================================="
-  echo "Provider: $provider, Model: $model"
-  echo "=========================================================="
+  if command -v start_span &> /dev/null; then
+    start_span "benchmark_provider_model"
+    log_info "Starting benchmark" "provider=$provider" "model=$model" "pair=$((i+1))/$COUNT"
+  else
+    echo "=========================================================="
+    echo "Provider: $provider, Model: $model"
+    echo "=========================================================="
+  fi
   
   echo "## Provider: $provider, Model: $model" >> "$SUMMARY_FILE"
   
@@ -167,20 +225,44 @@ for ((i=0; i<$COUNT; i++)); do
   fi
   
   # Run the benchmark and save results to JSON
-  echo "Running benchmark for $provider/$model with suites: $SUITES"
+  if command -v log_info &> /dev/null; then
+    log_info "Running benchmark" "provider=$provider" "model=$model" "suites=$SUITES"
+  else
+    echo "Running benchmark for $provider/$model with suites: $SUITES"
+  fi
+  
   OUTPUT_FILE="$OUTPUT_DIR/${provider}-${model}.json"
   ANALYSIS_FILE="$OUTPUT_DIR/${provider}-${model}-analysis.txt"
   
+  if command -v start_span &> /dev/null; then
+    start_span "goose_bench_execution"
+  fi
+  
   if $GOOSE_CMD bench --suites "$SUITES" --output "$OUTPUT_FILE" --format json; then
+    if command -v end_span &> /dev/null; then
+      end_span
+    fi
+    if command -v log_info &> /dev/null; then
+      log_info "Benchmark completed successfully" "provider=$provider" "model=$model"
+      record_metric "benchmark_success_${provider}_${model}" "1"
+      increment_counter "benchmark_successes"
+    fi
     echo "✅ Benchmark completed successfully" | tee -a "$SUMMARY_FILE"
     
     # Parse the JSON to check for failures
     if [ -f "$OUTPUT_FILE" ]; then
       # Check if jq is installed
       if ! command -v jq &> /dev/null; then
-        echo "Warning: jq not found. Cannot parse JSON results."
+        if command -v log_warn &> /dev/null; then
+          log_warn "jq not found. Cannot parse JSON results."
+        else
+          echo "Warning: jq not found. Cannot parse JSON results."
+        fi
         echo "⚠️ Could not parse results (jq not installed)" >> "$SUMMARY_FILE"
       else
+        if command -v start_span &> /dev/null; then
+          start_span "parse_benchmark_results"
+        fi
         # Basic validation of the JSON file
         if jq empty "$OUTPUT_FILE" 2>/dev/null; then
           # Extract basic information
@@ -285,6 +367,16 @@ for ((i=0; i<$COUNT; i++)); do
             echo "⚠️ Metrics counting discrepancy: $COUNTED_METRICS counted vs $TOTAL_METRICS total" >> "$ANALYSIS_FILE"
           fi
           
+          # Record metrics
+          if command -v record_metric &> /dev/null; then
+            record_metric "total_evals_${provider}_${model}" "$TOTAL_EVALS"
+            record_metric "total_metrics_${provider}_${model}" "$TOTAL_METRICS"
+            record_metric "passed_metrics_${provider}_${model}" "$PASSED_METRICS"
+            record_metric "failed_metrics_${provider}_${model}" "$FAILED_METRICS"
+            record_metric "other_metrics_${provider}_${model}" "$OTHER_METRICS"
+            record_metric "total_errors_${provider}_${model}" "$TOTAL_ERRORS"
+          fi
+          
           # Determine success/failure
           if [ "$FAILED_METRICS" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ]; then
             if [ "$FAILED_METRICS" -gt 0 ]; then
@@ -296,39 +388,98 @@ for ((i=0; i<$COUNT; i++)); do
             echo "❌ Tests failed for $provider/$model" | tee -a "$SUMMARY_FILE"
             cat "$ANALYSIS_FILE" >> "$SUMMARY_FILE"
             OVERALL_SUCCESS=false
+            if command -v log_error &> /dev/null; then
+              log_error "Benchmark failed" "provider=$provider" "model=$model" "failed_metrics=$FAILED_METRICS" "errors=$TOTAL_ERRORS"
+              record_metric "benchmark_success_${provider}_${model}" "0"
+              increment_counter "benchmark_failures"
+            fi
           else
             echo "✅ All metrics passed successfully, no errors" >> "$ANALYSIS_FILE"
             echo "✅ All tests passed for $provider/$model" | tee -a "$SUMMARY_FILE"
             cat "$ANALYSIS_FILE" >> "$SUMMARY_FILE"
+            if command -v log_info &> /dev/null; then
+              log_info "All tests passed" "provider=$provider" "model=$model" "total_metrics=$TOTAL_METRICS"
+            fi
+          fi
+          
+          if command -v end_span &> /dev/null; then
+            end_span
           fi
         else
-          echo "❌ Invalid JSON in benchmark output" | tee -a "$SUMMARY_FILE"
+          if command -v log_error &> /dev/null; then
+            log_error "Invalid JSON in benchmark output" "provider=$provider" "model=$model"
+            end_span
+          else
+            echo "❌ Invalid JSON in benchmark output" | tee -a "$SUMMARY_FILE"
+          fi
           OVERALL_SUCCESS=false
+          if command -v record_metric &> /dev/null; then
+            record_metric "benchmark_success_${provider}_${model}" "0"
+            increment_counter "benchmark_failures"
+          fi
         fi
       fi
     else
-      echo "❌ Benchmark output file not found" | tee -a "$SUMMARY_FILE"
+      if command -v log_error &> /dev/null; then
+        log_error "Benchmark output file not found" "provider=$provider" "model=$model" "expected=$OUTPUT_FILE"
+      else
+        echo "❌ Benchmark output file not found" | tee -a "$SUMMARY_FILE"
+      fi
       OVERALL_SUCCESS=false
+      if command -v record_metric &> /dev/null; then
+        record_metric "benchmark_success_${provider}_${model}" "0"
+        increment_counter "benchmark_failures"
+      fi
     fi
   else
-    echo "❌ Benchmark failed to run" | tee -a "$SUMMARY_FILE"
+    if command -v end_span &> /dev/null; then
+      end_span
+    fi
+    if command -v log_error &> /dev/null; then
+      log_error "Benchmark failed to run" "provider=$provider" "model=$model"
+      record_metric "benchmark_success_${provider}_${model}" "0"
+      increment_counter "benchmark_failures"
+    else
+      echo "❌ Benchmark failed to run" | tee -a "$SUMMARY_FILE"
+    fi
     OVERALL_SUCCESS=false
   fi
   
+  if command -v end_span &> /dev/null; then
+    end_span
+  fi
+  
   echo "" >> "$SUMMARY_FILE"
-  echo ""
+  if command -v log_info &> /dev/null; then
+    log_info "Completed benchmark pair" "provider=$provider" "model=$model"
+  else
+    echo ""
+  fi
 done
 
-echo "=========================================================="
-echo "Benchmark run completed"
-echo "Results saved to: $OUTPUT_DIR"
-echo "Summary file: $SUMMARY_FILE"
+if command -v log_info &> /dev/null; then
+  log_info "Benchmark run completed" "results_dir=$OUTPUT_DIR" "summary_file=$SUMMARY_FILE"
+  record_metric "overall_success" "$([ "$OVERALL_SUCCESS" = true ] && echo "1" || echo "0")"
+else
+  echo "=========================================================="
+  echo "Benchmark run completed"
+  echo "Results saved to: $OUTPUT_DIR"
+  echo "Summary file: $SUMMARY_FILE"
+fi
 
 # Output final status
 if [ "$OVERALL_SUCCESS" = false ]; then
-  echo "❌ Some benchmarks failed. Check the summary for details."
+  if command -v log_error &> /dev/null; then
+    log_error "Some benchmarks failed. Check the summary for details."
+  else
+    echo "❌ Some benchmarks failed. Check the summary for details."
+  fi
   exit 1
 else
-  echo "✅ All benchmarks completed successfully."
+  if command -v log_info &> /dev/null; then
+    log_info "All benchmarks completed successfully."
+  else
+    echo "✅ All benchmarks completed successfully."
+  fi
   exit 0
 fi

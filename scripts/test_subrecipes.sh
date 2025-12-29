@@ -1,20 +1,48 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="test_subrecipes"
+
+# Source logging utilities
+if [[ -f "$SCRIPT_DIR/logging-utils.sh" ]]; then
+    source "$SCRIPT_DIR/logging-utils.sh"
+fi
+
 if [ -f .env ]; then
   export $(grep -v '^#' .env | xargs)
 fi
 
 if [ -z "$SKIP_BUILD" ]; then
-  echo "Building goose..."
+  if command -v log_info &> /dev/null; then
+    log_info "Building goose..."
+    start_span "build"
+  else
+    echo "Building goose..."
+  fi
   cargo build --release --bin goose
-  echo ""
+  if command -v end_span &> /dev/null; then
+    end_span
+    log_info "Build completed"
+    record_metric "build_success" "1"
+  else
+    echo ""
+  fi
 else
-  echo "Skipping build (SKIP_BUILD is set)..."
+  if command -v log_info &> /dev/null; then
+    log_info "Skipping build (SKIP_BUILD is set)..."
+    record_metric "build_skipped" "1"
+  else
+    echo "Skipping build (SKIP_BUILD is set)..."
+  fi
   echo ""
 fi
 
-SCRIPT_DIR=$(pwd)
+if command -v log_info &> /dev/null; then
+  log_info "🚀 Starting subrecipe tests"
+  start_span "subrecipe_tests"
+  increment_counter "subrecipe_test_runs"
+fi
 
 # Add goose binary to PATH so subagents can find it when spawning
 export PATH="$SCRIPT_DIR/target/release:$PATH"
@@ -24,20 +52,38 @@ export PATH="$SCRIPT_DIR/target/release:$PATH"
 export GOOSE_PROVIDER="${GOOSE_PROVIDER:-anthropic}"
 export GOOSE_MODEL="${GOOSE_MODEL:-claude-3-5-haiku-20241022}"
 
-echo "Using provider: $GOOSE_PROVIDER"
-echo "Using model: $GOOSE_MODEL"
-echo ""
+if command -v log_info &> /dev/null; then
+  log_info "Configuration" "provider=$GOOSE_PROVIDER" "model=$GOOSE_MODEL"
+  record_metric "provider" "$GOOSE_PROVIDER"
+  record_metric "model" "$GOOSE_MODEL"
+else
+  echo "Using provider: $GOOSE_PROVIDER"
+  echo "Using model: $GOOSE_MODEL"
+  echo ""
+fi
 
 TESTDIR=$(mktemp -d)
-echo "Created test directory: $TESTDIR"
+if command -v log_info &> /dev/null; then
+  log_info "Created test directory" "dir=$TESTDIR"
+else
+  echo "Created test directory: $TESTDIR"
+fi
 
 cp -r "$SCRIPT_DIR/scripts/test-subrecipes-examples/"* "$TESTDIR/"
-echo "Copied test recipes from scripts/test-subrecipes-examples"
+if command -v log_info &> /dev/null; then
+  log_info "Copied test recipes from scripts/test-subrecipes-examples"
+else
+  echo "Copied test recipes from scripts/test-subrecipes-examples"
+fi
 
-echo ""
-echo "=== Testing Subrecipe Workflow ==="
-echo "Recipe: $TESTDIR/project_analyzer.yaml"
-echo ""
+if command -v log_info &> /dev/null; then
+  log_info "Testing Subrecipe Workflow" "recipe=$TESTDIR/project_analyzer.yaml"
+else
+  echo ""
+  echo "=== Testing Subrecipe Workflow ==="
+  echo "Recipe: $TESTDIR/project_analyzer.yaml"
+  echo ""
+fi
 
 # Create sample code files for analysis
 echo "Creating sample code files for testing..."

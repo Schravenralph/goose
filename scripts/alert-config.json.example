@@ -1,0 +1,32 @@
+{
+  "thresholds": {
+    "error_count": 1,
+    "failure": 1,
+    "duration_seconds": 3600,
+    "repeated_failures": 3,
+    "error_rate": 0.1
+  },
+  "channels": {
+    "email": {
+      "enabled": false,
+      "to": "team@example.com"
+    },
+    "slack": {
+      "enabled": false,
+      "webhook_url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "https://your-webhook-endpoint.com/alerts"
+    },
+    "pagerduty": {
+      "enabled": false,
+      "integration_key": "your-pagerduty-integration-key"
+    }
+  },
+  "deduplication": {
+    "enabled": true,
+    "window_seconds": 300
+  }
+}
+

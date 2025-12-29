@@ -3355,6 +3355,7 @@ mod tests {
 
             // Give the command a moment to start
             tokio::time::sleep(Duration::from_millis(200)).await;
+            tracing::debug!("Sleep 200ms completed, checking if process is tracked");
 
             // Verify the process is tracked
             {
