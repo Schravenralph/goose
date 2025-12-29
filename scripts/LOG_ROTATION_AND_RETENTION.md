@@ -357,8 +357,110 @@ find /tmp/goose-logs -name "*.json" -mtime +30 -delete
 - Verify logs contain ERROR or FATAL level entries (required for archiving)
 - Check archive retention period is sufficient
 
+## Monitoring and Alerting
+
+The log rotation script includes built-in monitoring and alerting capabilities to ensure rotation is working correctly.
+
+### Rotation Status
+
+The rotation script creates a status file at `$LOG_DIR/.rotation-status.json` (default: `/tmp/goose-logs/.rotation-status.json`) that contains:
+
+- Last rotation timestamp
+- Rotation duration
+- Success/failure status
+- Files processed (compressed, deleted, archived)
+- Space freed
+- Disk usage information
+
+#### Check Rotation Status
+
+```bash
+# View rotation status
+./scripts/check-rotation-status.sh
+
+# Or manually check the status file
+cat /tmp/goose-logs/.rotation-status.json | jq .
+```
+
+### Monitoring Integration
+
+The rotation script integrates with the alerting system (`alerting-utils.sh`) to automatically:
+
+- **Detect rotation failures**: Alerts when rotation completes with errors
+- **Monitor disk space**: Alerts when disk usage exceeds thresholds (default: 80% warning, 90% critical)
+- **Detect missed rotations**: Alerts when rotation hasn't run within the expected interval (default: 25 hours)
+
+### Alert Configuration
+
+Configure alerts by setting up `alert-config.json` (see [ALERTING.md](./ALERTING.md)):
+
+```json
+{
+  "thresholds": {
+    "disk_space_warning": 80,
+    "disk_space_critical": 90,
+    "missed_rotation_hours": 25
+  },
+  "channels": {
+    "email": { "enabled": true, "to": "admin@example.com" },
+    "slack": { "enabled": true, "webhook_url": "https://hooks.slack.com/..." }
+  }
+}
+```
+
+### Environment Variables for Monitoring
+
+```bash
+# Disk space thresholds (percentages)
+export GOOSE_LOG_DISK_SPACE_WARNING=80
+export GOOSE_LOG_DISK_SPACE_CRITICAL=90
+
+# Missed rotation threshold (hours)
+export GOOSE_LOG_MISSED_ROTATION_HOURS=25
+
+# Status file location
+export ROTATION_STATUS_FILE=/tmp/goose-logs/.rotation-status.json
+```
+
+### Automatic Monitoring
+
+The `monitor-alerts.sh` script automatically monitors rotation status:
+
+```bash
+# Run monitor once
+RUN_ONCE=true ./scripts/monitor-alerts.sh
+
+# Run continuously (as daemon)
+./scripts/monitor-alerts.sh
+
+# Or add to cron (check every 5 minutes)
+*/5 * * * * /path/to/goose/scripts/monitor-alerts.sh RUN_ONCE=true
+```
+
+The monitor will:
+- Check rotation status file for failures
+- Detect missed rotations
+- Monitor disk space usage
+- Send alerts to configured channels
+
+### Metrics Available
+
+The rotation script records the following metrics (available in metrics files):
+
+- `rotation_duration` - Duration of rotation in seconds
+- `rotation_files_compressed` - Number of files compressed
+- `rotation_files_deleted` - Number of files deleted
+- `rotation_files_archived` - Number of files archived
+- `rotation_space_freed_mb` - Space freed in MB
+- `rotation_success` - Success status (1 = success, 0 = failure)
+- `disk_space_usage_percent` - Disk usage percentage
+- `disk_space_available_mb` - Available disk space in MB
+
+These metrics can be integrated with monitoring dashboards (Prometheus, Grafana, etc.).
+
 ## Related Documentation
 
 - [Logging Improvements](./LOGGING_IMPROVEMENTS.md) - Structured logging implementation
 - [Implementation Summary](./IMPLEMENTATION_SUMMARY.md) - Logging infrastructure overview
+- [Alerting and Notifications](./ALERTING.md) - Alerting system documentation
 

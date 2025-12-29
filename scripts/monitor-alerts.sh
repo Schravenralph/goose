@@ -118,6 +118,59 @@ cleanup_processed_files() {
     fi
 }
 
+# Function to monitor rotation status
+monitor_rotation_status() {
+    if [[ ! -f "$ROTATION_STATUS_FILE" ]]; then
+        log_debug "Rotation status file not found, skipping rotation monitoring"
+        return 0
+    fi
+    
+    if ! command -v jq &> /dev/null; then
+        log_debug "jq not available, skipping rotation status monitoring"
+        return 0
+    fi
+    
+    log_debug "Checking rotation status"
+    
+    # Check if last rotation was successful
+    local success=$(jq -r '.success // true' "$ROTATION_STATUS_FILE" 2>/dev/null || echo "true")
+    if [[ "$success" != "true" ]]; then
+        local error_message="Log rotation failed (check status file: $ROTATION_STATUS_FILE)"
+        log_warn "$error_message"
+        send_alert "$SEVERITY_HIGH" "rotation_failure" "$error_message" \
+            "$(jq '{files_compressed, files_deleted, errors}' "$ROTATION_STATUS_FILE" 2>/dev/null || echo '{}')"
+    fi
+    
+    # Check for missed rotations
+    local last_rotation=$(jq -r '.last_rotation_time // 0' "$ROTATION_STATUS_FILE" 2>/dev/null || echo "0")
+    if [[ $last_rotation -gt 0 ]]; then
+        local current_time=$(date +%s)
+        local time_diff=$((current_time - last_rotation))
+        local hours_diff=$((time_diff / 3600))
+        
+        if [[ $hours_diff -ge $MISSED_ROTATION_THRESHOLD_HOURS ]]; then
+            local message="Missed log rotation: Last rotation was ${hours_diff} hours ago (threshold: ${MISSED_ROTATION_THRESHOLD_HOURS} hours)"
+            log_warn "$message"
+            send_alert "$SEVERITY_HIGH" "missed_rotation" "$message" \
+                "{\"hours_since_last_rotation\": $hours_diff, \"threshold_hours\": $MISSED_ROTATION_THRESHOLD_HOURS}"
+        fi
+    fi
+    
+    # Check disk space from rotation status
+    local disk_usage=$(jq -r '.disk_usage_percent // 0' "$ROTATION_STATUS_FILE" 2>/dev/null || echo "0")
+    if [[ $disk_usage -ge 90 ]]; then
+        local message="Critical disk space from rotation status: ${disk_usage}% used"
+        log_warn "$message"
+        send_alert "$SEVERITY_CRITICAL" "disk_space_critical" "$message" \
+            "$(jq '{disk_usage_percent, available_disk_space_mb}' "$ROTATION_STATUS_FILE" 2>/dev/null || echo '{}')"
+    elif [[ $disk_usage -ge 80 ]]; then
+        local message="Warning: Disk space usage: ${disk_usage}% used"
+        log_warn "$message"
+        send_alert "$SEVERITY_HIGH" "disk_space_warning" "$message" \
+            "$(jq '{disk_usage_percent, available_disk_space_mb}' "$ROTATION_STATUS_FILE" 2>/dev/null || echo '{}')"
+    fi
+}
+
 # Function to clean up old log files
 cleanup_old_logs() {
     log_debug "Cleaning up log files older than $RETENTION_DAYS days"
@@ -137,6 +190,9 @@ main_loop() {
         
         # Check for repeated failures
         check_repeated_failures_across_scripts
+        
+        # Monitor rotation status
+        monitor_rotation_status
         
         # Cleanup
         cleanup_processed_files
@@ -161,6 +217,7 @@ if [[ "${RUN_ONCE:-false}" == "true" ]]; then
     monitor_metrics_files
     monitor_log_files
     check_repeated_failures_across_scripts
+    monitor_rotation_status
     cleanup_processed_files
     cleanup_old_logs
 else
