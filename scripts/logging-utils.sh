@@ -216,8 +216,164 @@ if [[ -f "$SCRIPT_DIR/alerting-utils.sh" ]]; then
     source "$SCRIPT_DIR/alerting-utils.sh"
 fi
 
-# Trap to ensure metrics are written on exit and alerts are sent if needed
-trap 'EXIT_CODE=$?; write_metrics; end_span; if command -v check_script_failure &> /dev/null; then check_script_failure "$EXIT_CODE"; fi; if command -v analyze_metrics_and_alert &> /dev/null && [[ -n "${METRICS_FILE:-}" ]] && [[ -f "$METRICS_FILE" ]]; then analyze_metrics_and_alert "$METRICS_FILE"; fi' EXIT
+# Script-triggered log rotation configuration
+# These can be overridden via environment variables
+GOOSE_LOG_ROTATION_ENABLED="${GOOSE_LOG_ROTATION_ENABLED:-true}"
+GOOSE_LOG_ROTATION_SIZE_THRESHOLD_MB="${GOOSE_LOG_ROTATION_SIZE_THRESHOLD_MB:-50}"
+GOOSE_LOG_ROTATION_COUNT_THRESHOLD="${GOOSE_LOG_ROTATION_COUNT_THRESHOLD:-100}"
+GOOSE_LOG_ROTATION_DEFERRED="${GOOSE_LOG_ROTATION_DEFERRED:-true}"
+
+# Lock file for rotation (prevents concurrent rotations)
+ROTATION_LOCK_FILE="${LOG_DIR}/.rotation.lock"
+
+# Function to get total size of log files in directory (in bytes)
+get_log_dir_size() {
+    local dir="$1"
+    if [[ ! -d "$dir" ]]; then
+        echo "0"
+        return
+    fi
+    
+    local total_size=0
+    # Count only uncompressed log files
+    while IFS= read -r file; do
+        if [[ -f "$file" ]]; then
+            local size
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                size=$(stat -f "%z" "$file" 2>/dev/null || echo "0")
+            else
+                size=$(stat -c "%s" "$file" 2>/dev/null || echo "0")
+            fi
+            total_size=$((total_size + size))
+        fi
+    done < <(find "$dir" -type f \( -name "*.jsonl" -o -name "*.log" -o -name "*.json" \) ! -name "*.gz" ! -name "*.bz2" ! -name "*.xz" 2>/dev/null)
+    
+    echo "$total_size"
+}
+
+# Function to count log files in directory
+get_log_file_count() {
+    local dir="$1"
+    if [[ ! -d "$dir" ]]; then
+        echo "0"
+        return
+    fi
+    
+    # Count only uncompressed log files
+    find "$dir" -type f \( -name "*.jsonl" -o -name "*.log" -o -name "*.json" \) ! -name "*.gz" ! -name "*.bz2" ! -name "*.xz" 2>/dev/null | wc -l | tr -d ' '
+}
+
+# Function to check if rotation is needed
+check_rotation_needed() {
+    if [[ "${GOOSE_LOG_ROTATION_ENABLED}" != "true" ]]; then
+        return 1
+    fi
+    
+    if [[ ! -d "$LOG_DIR" ]]; then
+        return 1
+    fi
+    
+    # Check size threshold
+    local total_size_bytes=$(get_log_dir_size "$LOG_DIR")
+    local size_threshold_bytes=$((GOOSE_LOG_ROTATION_SIZE_THRESHOLD_MB * 1024 * 1024))
+    
+    if [[ $total_size_bytes -gt $size_threshold_bytes ]]; then
+        log_debug "Rotation needed: size threshold exceeded (${total_size_bytes} bytes > ${size_threshold_bytes} bytes)"
+        return 0
+    fi
+    
+    # Check count threshold
+    local file_count=$(get_log_file_count "$LOG_DIR")
+    
+    if [[ $file_count -gt $GOOSE_LOG_ROTATION_COUNT_THRESHOLD ]]; then
+        log_debug "Rotation needed: count threshold exceeded (${file_count} files > ${GOOSE_LOG_ROTATION_COUNT_THRESHOLD} files)"
+        return 0
+    fi
+    
+    return 1
+}
+
+# Function to trigger log rotation asynchronously with file locking
+trigger_log_rotation() {
+    if ! check_rotation_needed; then
+        return 0
+    fi
+    
+    # Check if rotation script exists
+    local rotation_script="${SCRIPT_DIR}/rotate-logs.sh"
+    if [[ ! -f "$rotation_script" ]]; then
+        log_warn "Rotation script not found: $rotation_script"
+        return 1
+    fi
+    
+    # Create lock file directory if needed
+    mkdir -p "$(dirname "$ROTATION_LOCK_FILE")"
+    
+    # Try to acquire lock using flock (non-blocking)
+    if command -v flock &> /dev/null; then
+        # Use flock for file locking (preferred method)
+        (
+            exec 200>"$ROTATION_LOCK_FILE"
+            if flock -n 200; then
+                log_info "Triggering log rotation (size or count threshold exceeded)"
+                record_metric "rotation_triggered" "1" "trigger=script" "threshold=size_or_count"
+                increment_counter "rotation_trigger_count"
+                
+                # Run rotation in background to avoid blocking
+                if [[ "${GOOSE_LOG_ROTATION_DEFERRED}" == "true" ]]; then
+                    # Deferred: run in background, detached from current process
+                    nohup bash "$rotation_script" true false >/dev/null 2>&1 &
+                else
+                    # Immediate: run in background but wait briefly
+                    bash "$rotation_script" true false >/dev/null 2>&1 &
+                fi
+            else
+                log_debug "Rotation already in progress (lock held), skipping"
+                record_metric "rotation_skipped" "1" "reason=lock_held"
+            fi
+        )
+    else
+        # Fallback: use simple file-based locking
+        if [[ -f "$ROTATION_LOCK_FILE" ]]; then
+            # Check if lock is stale (older than 5 minutes)
+            local lock_age
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                lock_age=$(($(date +%s) - $(stat -f "%m" "$ROTATION_LOCK_FILE" 2>/dev/null || echo "0")))
+            else
+                lock_age=$(($(date +%s) - $(stat -c "%Y" "$ROTATION_LOCK_FILE" 2>/dev/null || echo "0")))
+            fi
+            
+            if [[ $lock_age -lt 300 ]]; then
+                log_debug "Rotation already in progress (lock file exists), skipping"
+                record_metric "rotation_skipped" "1" "reason=lock_file_exists"
+                return 0
+            else
+                log_warn "Removing stale rotation lock file (age: ${lock_age}s)"
+                rm -f "$ROTATION_LOCK_FILE"
+            fi
+        fi
+        
+        # Create lock file
+        echo "$$" > "$ROTATION_LOCK_FILE"
+        
+        log_info "Triggering log rotation (size or count threshold exceeded)"
+        record_metric "rotation_triggered" "1" "trigger=script" "threshold=size_or_count"
+        increment_counter "rotation_trigger_count"
+        
+        # Run rotation in background
+        if [[ "${GOOSE_LOG_ROTATION_DEFERRED}" == "true" ]]; then
+            nohup bash "$rotation_script" true false >/dev/null 2>&1 &
+        else
+            bash "$rotation_script" true false >/dev/null 2>&1 &
+        fi
+        
+        # Remove lock file after a delay (allowing rotation to start)
+        (sleep 2 && rm -f "$ROTATION_LOCK_FILE") &
+    fi
+}
+
+# Trap to ensure metrics are written on exit, rotation is triggered if needed, and alerts are sent if needed
+trap 'EXIT_CODE=$?; write_metrics; trigger_log_rotation; end_span; if command -v check_script_failure &> /dev/null; then check_script_failure "$EXIT_CODE"; fi; if command -v analyze_metrics_and_alert &> /dev/null && [[ -n "${METRICS_FILE:-}" ]] && [[ -f "$METRICS_FILE" ]]; then analyze_metrics_and_alert "$METRICS_FILE"; fi' EXIT
 
 # Initialize logging
 log_info "Script started" "trace_id=$TRACE_ID" "log_file=$LOG_FILE"

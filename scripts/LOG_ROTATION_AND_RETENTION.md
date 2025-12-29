@@ -78,49 +78,188 @@ Run the rotation script manually:
 
 ### Automated Rotation
 
-Set up a cron job for automatic rotation:
+#### Cron Job Installation (Recommended)
+
+The easiest way to set up automated log rotation is using the provided installation script:
+
+```bash
+# Install user-level cron job (daily at 2 AM)
+./scripts/install-cron-log-rotation.sh
+
+# Install with custom schedule (daily at 3 AM)
+./scripts/install-cron-log-rotation.sh --schedule "0 3 * * *"
+
+# Install system-level cron (requires sudo)
+sudo ./scripts/install-cron-log-rotation.sh --type system
+
+# Install with custom log directory
+./scripts/install-cron-log-rotation.sh --log-dir /var/log/goose
+```
+
+The installation script will:
+- Create a wrapper script that handles PATH and environment variables
+- Set up error handling and logging for cron execution
+- Install the cron job (user-level or system-level)
+- Configure logging to capture cron execution output
+
+**Uninstallation:**
+
+```bash
+# Uninstall cron job (auto-detects installation type)
+./scripts/uninstall-cron-log-rotation.sh
+
+# Uninstall user-level cron only
+./scripts/uninstall-cron-log-rotation.sh --type user
+
+# Uninstall system-level cron (requires sudo)
+sudo ./scripts/uninstall-cron-log-rotation.sh --type system
+```
+
+**Verification:**
+
+```bash
+# Check user-level cron
+crontab -l
+
+# Check system-level cron
+sudo cat /etc/cron.d/goose-log-rotation
+
+# View cron execution logs
+tail -f /tmp/goose-logs/cron-rotation.log
+```
+
+#### Manual Cron Setup
+
+Alternatively, you can manually set up a cron job:
 
 ```bash
 # Add to crontab (runs daily at 2 AM)
 0 2 * * * /path/to/goose/scripts/rotate-logs.sh
 ```
 
-Or use systemd timer (create `/etc/systemd/system/goose-log-rotation.service`):
+**Note:** When setting up manually, ensure:
+- The script path is absolute
+- PATH is set correctly in the cron environment
+- Output is redirected to a log file for debugging
 
-```ini
-[Unit]
-Description=Goose Log Rotation
-After=network.target
+#### Systemd Timer Installation (Linux)
 
-[Service]
-Type=oneshot
-ExecStart=/path/to/goose/scripts/rotate-logs.sh
-Environment="GOOSE_LOG_DETAILED_RETENTION_DAYS=7"
-Environment="GOOSE_LOG_SUMMARY_RETENTION_DAYS=30"
-Environment="GOOSE_LOG_ARCHIVE_RETENTION_DAYS=365"
-```
+For Linux systems using systemd, you can use systemd timers instead of cron. Systemd timers provide better logging, dependency management, and integration with the systemd journal.
 
-And `/etc/systemd/system/goose-log-rotation.timer`:
+**Installation:**
 
-```ini
-[Unit]
-Description=Goose Log Rotation Timer
-Requires=goose-log-rotation.service
-
-[Timer]
-OnCalendar=daily
-OnCalendar=02:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-Enable with:
 ```bash
-sudo systemctl enable goose-log-rotation.timer
-sudo systemctl start goose-log-rotation.timer
+# Install user-level systemd timer (daily at 2 AM)
+./scripts/install-systemd-log-rotation.sh
+
+# Install system-level systemd timer (requires sudo)
+sudo ./scripts/install-systemd-log-rotation.sh --type system
+
+# Install with custom schedule (daily at 3 AM)
+./scripts/install-systemd-log-rotation.sh --schedule "*-*-* 03:00:00"
+
+# Install with weekly schedule
+./scripts/install-systemd-log-rotation.sh --schedule weekly
 ```
+
+The installation script will:
+- Create systemd service and timer unit files
+- Configure environment variables for log rotation
+- Enable and start the timer automatically
+- Set up proper logging to systemd journal
+
+**Uninstallation:**
+
+```bash
+# Uninstall systemd timer (auto-detects installation type)
+./scripts/uninstall-systemd-log-rotation.sh
+
+# Uninstall user-level systemd timer only
+./scripts/uninstall-systemd-log-rotation.sh --type user
+
+# Uninstall system-level systemd timer (requires sudo)
+sudo ./scripts/uninstall-systemd-log-rotation.sh --type system
+```
+
+**Verification:**
+
+```bash
+# Check timer status (user-level)
+systemctl --user status goose-log-rotation.timer
+systemctl --user list-timers goose-log-rotation.timer
+
+# Check timer status (system-level)
+sudo systemctl status goose-log-rotation.timer
+sudo systemctl list-timers goose-log-rotation.timer
+
+# View service logs (user-level)
+journalctl --user -u goose-log-rotation.service
+
+# View service logs (system-level)
+sudo journalctl -u goose-log-rotation.service
+
+# View recent rotation logs
+journalctl --user -u goose-log-rotation.service --since "1 hour ago"
+```
+
+**Systemd Timer Schedule Format:**
+
+- `daily` - Daily at 2:00 AM (default)
+- `weekly` - Weekly on Monday at 2:00 AM
+- `hourly` - Every hour
+- `"*-*-* 03:00:00"` - Daily at 3:00 AM
+- `"Mon *-*-* 02:00:00"` - Every Monday at 2:00 AM
+- `"*-*-01 02:00:00"` - First day of month at 2:00 AM
+
+See `systemd.time(7)` for more OnCalendar format options.
+
+**Manual Systemd Setup:**
+
+If you prefer to set up systemd units manually, you can copy the template files from `scripts/goose-log-rotation.service` and `scripts/goose-log-rotation.timer` to the appropriate systemd directory and customize them.
+
+#### Script-Triggered Rotation (Automatic)
+
+Script-triggered rotation automatically runs when scripts execute, checking if rotation is needed based on log file size or count thresholds. This provides immediate rotation when logs are generated, complementing scheduled rotation.
+
+**How it works:**
+- Automatically checks rotation thresholds when scripts using `logging-utils.sh` exit
+- Triggers rotation asynchronously in the background to avoid blocking script execution
+- Uses file locking to prevent concurrent rotations
+- Only rotates bash script logs (not Rust logs) to avoid interference with active processes
+
+**Configuration:**
+
+```bash
+# Enable/disable script-triggered rotation (default: true)
+export GOOSE_LOG_ROTATION_ENABLED=true
+
+# Size threshold in MB (default: 50MB)
+# Rotation triggers when total log directory size exceeds this
+export GOOSE_LOG_ROTATION_SIZE_THRESHOLD_MB=50
+
+# Count threshold (default: 100 files)
+# Rotation triggers when number of log files exceeds this
+export GOOSE_LOG_ROTATION_COUNT_THRESHOLD=100
+
+# Deferred rotation (default: true)
+# If true, rotation runs in background detached from script
+# If false, rotation runs in background but script waits briefly
+export GOOSE_LOG_ROTATION_DEFERRED=true
+```
+
+**Behavior:**
+- Rotation is triggered automatically when scripts exit if thresholds are exceeded
+- Runs asynchronously to avoid blocking script execution
+- File locking prevents multiple concurrent rotations
+- Metrics are recorded for rotation trigger events
+- Works alongside cron-based rotation (complementary, not replacement)
+
+**Metrics:**
+- `rotation_triggered`: Count of times rotation was triggered
+- `rotation_skipped`: Count of times rotation was skipped (lock held)
+- `rotation_trigger_count`: Total rotation trigger counter
+
+**Note:** Script-triggered rotation complements scheduled rotation. Scheduled rotation ensures regular cleanup even during low-activity periods, while script-triggered rotation handles immediate needs during heavy usage.
 
 ## Log Rotation Features
 
