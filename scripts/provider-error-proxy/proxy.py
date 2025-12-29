@@ -25,23 +25,35 @@ To use with Goose, set the provider host environment variables:
 """
 
 import asyncio
-import logging
 import os
 import random
+import sys
 import threading
 from argparse import ArgumentParser
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from aiohttp import web, ClientSession, ClientTimeout
 from aiohttp.web import Request, Response, StreamResponse
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Add parent directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def log_debug(self, *args, **kwargs): pass
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
 
 # Provider endpoint mappings
 PROVIDER_HOSTS = {
@@ -407,7 +419,7 @@ class ErrorProxy:
                 env_var = f"{provider_name.upper()}_REAL_HOST"
                 if env_var in os.environ:
                     base_host = os.environ[env_var]
-                    logger.info(f"Using {env_var} for always-forward path")
+                    logging_utils.log_info(f"Using {env_var} for always-forward path")
                     break
 
         # Fall back to default provider host
@@ -458,11 +470,11 @@ class ErrorProxy:
         self.request_count += 1
         provider = self.detect_provider(request)
 
-        logger.info(f"📨 Request #{self.request_count}: {request.method} {request.path} -> {provider}")
+        logging_utils.log_info(f"📨 Request #{self.request_count}: {request.method} {request.path} -> {provider}")
 
         # Check if this request should always be forwarded
         if self.should_always_forward(request):
-            logger.info(f"🔄 Always forwarding: {request.path}")
+            logging_utils.log_info(f"🔄 Always forwarding: {request.path}")
         else:
             # Capture the error mode BEFORE checking if we should inject (since that modifies state)
             mode_before_check = self.get_error_mode()
@@ -474,9 +486,11 @@ class ErrorProxy:
                 error_config = ERROR_CONFIGS.get(provider, ERROR_CONFIGS['openai']).get(
                     mode_before_check, ERROR_CONFIGS['openai'][ErrorMode.SERVER_ERROR]
                 )
-                logger.warning(f"💥 Injecting {mode_before_check.name} error (status {error_config['status']}) for {provider}")
+                logging_utils.log_warn(f"💥 Injecting {mode_before_check.name} error (status {error_config['status']}) for {provider}")
+                logging_utils.increment_counter('errors_injected')
+                logging_utils.record_metric('error_type', mode_before_check.name, provider=provider)
                 # Show status after the injection to reflect the updated state
-                logger.info(f"Status: {self._format_status_line()}")
+                logging_utils.log_info(f"Status: {self._format_status_line()}")
                 return web.json_response(
                     error_config['body'],
                     status=error_config['status']
@@ -517,7 +531,8 @@ class ErrorProxy:
                 
                 if is_streaming:
                     # Stream the response (Server-Sent Events)
-                    logger.info(f"🌊 Streaming response: {resp.status}")
+                    logging_utils.log_info(f"🌊 Streaming response: {resp.status}")
+                    logging_utils.increment_counter('streaming_responses')
                     response = StreamResponse(
                         status=resp.status,
                         headers=response_headers
@@ -530,14 +545,17 @@ class ErrorProxy:
                             await response.write(chunk)
                         await response.write_eof()
                     except Exception as stream_error:
-                        logger.warning(f"Stream write error (client may have disconnected): {stream_error}")
-                    logger.info(f"Status: {self._format_status_line()}")
+                        logging_utils.log_warn(f"Stream write error (client may have disconnected): {stream_error}")
+                        logging_utils.increment_counter('stream_errors')
+                    logging_utils.log_info(f"Status: {self._format_status_line()}")
                     return response
                 else:
                     # Non-streaming response - read entire body
                     response_body = await resp.read()
-                    logger.info(f"✅ Proxied response: {resp.status}")
-                    logger.info(f"Status: {self._format_status_line()}")
+                    logging_utils.log_info(f"✅ Proxied response: {resp.status}")
+                    logging_utils.increment_counter('proxied_responses')
+                    logging_utils.record_metric('response_status', resp.status, provider=provider)
+                    logging_utils.log_info(f"Status: {self._format_status_line()}")
 
                     return Response(
                         body=response_body,
@@ -546,7 +564,8 @@ class ErrorProxy:
                     )
                 
         except Exception as e:
-            logger.error(f"❌ Error proxying request: {e}", exc_info=True)
+            logging_utils.log_error(f"❌ Error proxying request: {e}")
+            logging_utils.increment_counter('proxy_errors')
             return web.json_response(
                 {'error': {'message': f'Proxy error: {str(e)}'}},
                 status=500
@@ -684,7 +703,7 @@ def stdin_reader(proxy: ErrorProxy, loop):
             asyncio.run_coroutine_threadsafe(shutdown_server(loop), loop)
             break
         except Exception as e:
-            logger.error(f"Error reading stdin: {e}")
+            logging_utils.log_error(f"Error reading stdin: {e}")
 
 
 async def shutdown_server(loop):
@@ -707,12 +726,18 @@ async def create_app(proxy: ErrorProxy) -> web.Application:
     
     # Setup and teardown
     async def on_startup(app):
+        logging_utils.start_span("proxy_startup")
         await proxy.start_session()
-        logger.info("🚀 Proxy session started")
+        logging_utils.log_info("🚀 Proxy session started")
+        logging_utils.end_span()
         
     async def on_cleanup(app):
+        logging_utils.start_span("proxy_cleanup")
         await proxy.close_session()
-        logger.info("🛑 Proxy session closed")
+        logging_utils.log_info("🛑 Proxy session closed")
+        logging_utils.record_metric('total_requests', proxy.request_count)
+        logging_utils.write_metrics(exit_code=0)
+        logging_utils.end_span()
         
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
@@ -803,13 +828,17 @@ def main():
     site = web.TCPSite(runner, 'localhost', args.port)
     loop.run_until_complete(site.start())
     
-    logger.info(f"Proxy running on http://localhost:{args.port}")
+    logging_utils.start_span("proxy_running")
+    logging_utils.log_info(f"Proxy running on http://localhost:{args.port}")
+    logging_utils.record_metric('proxy_port', args.port)
     
     try:
         loop.run_forever()
     except KeyboardInterrupt:
         print("\n🛑 Shutting down proxy...")
+        logging_utils.log_info("Shutting down proxy due to keyboard interrupt")
     finally:
+        logging_utils.end_span()
         loop.run_until_complete(runner.cleanup())
         loop.close()
 

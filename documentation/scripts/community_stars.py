@@ -32,6 +32,24 @@ import calendar
 from pathlib import Path
 import time
 
+# Add scripts directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts"))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def log_debug(self, *args, **kwargs): pass
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
+
 # GitHub URL for team list file
 TEAMS_FILE_URL = "https://raw.githubusercontent.com/block/goose/main/documentation/scripts/community_stars_teams.txt"
 LOCAL_TEAMS_FILE = Path(__file__).parent / "community_stars_teams.txt"
@@ -169,28 +187,47 @@ def parse_date_range(date_input):
     raise ValueError(f"Could not parse date input: {date_input}\nSupported formats:\n  - 'Month YYYY' (e.g., 'November 2025')\n  - 'Month Day, YYYY - Month Day, YYYY' (e.g., 'November 1, 2025 - November 17, 2025')\n  - 'YYYY-MM-DD - YYYY-MM-DD' (e.g., '2025-11-01 - 2025-11-17')")
 
 def main():
+    logging_utils.start_span("community_stars_main")
+    
     # Parse command line arguments
     if len(sys.argv) < 2:
-        print("Usage: python3 community_stars.py 'date_range'")
-        print("Examples:")
-        print("  python3 community_stars.py 'November 2025'")
-        print("  python3 community_stars.py 'November 1, 2025 - November 17, 2025'")
-        print("  python3 community_stars.py '2025-11-01 - 2025-11-17'")
+        logging_utils.log_error("Usage: python3 community_stars.py 'date_range'")
+        logging_utils.log_info("Examples:")
+        logging_utils.log_info("  python3 community_stars.py 'November 2025'")
+        logging_utils.log_info("  python3 community_stars.py 'November 1, 2025 - November 17, 2025'")
+        logging_utils.log_info("  python3 community_stars.py '2025-11-01 - 2025-11-17'")
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=1)
         sys.exit(1)
 
     date_input = sys.argv[1]
+    logging_utils.record_metric('date_input', date_input)
+    
     try:
+        logging_utils.start_span("parse_date_range")
         start_timestamp, end_timestamp, display_period = parse_date_range(date_input)
         start_date = datetime.fromtimestamp(start_timestamp)
         end_date = datetime.fromtimestamp(end_timestamp)
+        logging_utils.record_metric('start_date', start_date.isoformat())
+        logging_utils.record_metric('end_date', end_date.isoformat())
+        logging_utils.end_span()
     except ValueError as e:
-        print(f"Error: {e}")
+        logging_utils.log_error(f"Error: {e}")
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=1)
         sys.exit(1)
 
     # Load team lists
+    logging_utils.start_span("load_team_lists")
     goose_maintainers, block_non_goose, external_goose, bots = load_team_lists()
+    logging_utils.record_metric('goose_maintainers_count', len(goose_maintainers))
+    logging_utils.record_metric('block_non_goose_count', len(block_non_goose))
+    logging_utils.record_metric('external_goose_count', len(external_goose))
+    logging_utils.record_metric('bots_count', len(bots))
+    logging_utils.end_span()
 
     # Load GitHub data
+    logging_utils.start_span("load_github_data")
     github_data_file = '/tmp/github_contributors.json'
     contributors_data = None
     
@@ -201,15 +238,15 @@ def main():
             
         # Validate the data is not empty or invalid
         if not contributors_data or not isinstance(contributors_data, list) or len(contributors_data) == 0:
-            print(f"Warning: GitHub data file exists but is empty or invalid. Fetching fresh data...", file=sys.stderr)
+            logging_utils.log_warn("GitHub data file exists but is empty or invalid. Fetching fresh data...")
             contributors_data = None
     except (FileNotFoundError, json.JSONDecodeError):
-        print(f"GitHub data file not found or invalid. Fetching fresh data...", file=sys.stderr)
+        logging_utils.log_info("GitHub data file not found or invalid. Fetching fresh data...")
         contributors_data = None
     
     # Fetch from GitHub API if needed
     if contributors_data is None:
-        print("Fetching contributor data from GitHub API...", file=sys.stderr)
+        logging_utils.log_info("Fetching contributor data from GitHub API...")
         max_retries = 3
         retry_delay = 2
         
@@ -224,33 +261,43 @@ def main():
                     # Save to file for future use
                     with open(github_data_file, 'w') as f:
                         json.dump(contributors_data, f)
-                    print(f"✓ Successfully fetched data for {len(contributors_data)} contributors", file=sys.stderr)
+                    logging_utils.log_info(f"✓ Successfully fetched data for {len(contributors_data)} contributors")
+                    logging_utils.record_metric('contributors_fetched', len(contributors_data))
                     break
                 else:
-                    print(f"Attempt {attempt + 1}/{max_retries}: GitHub API returned empty data. Retrying...", file=sys.stderr)
+                    logging_utils.log_warn(f"Attempt {attempt + 1}/{max_retries}: GitHub API returned empty data. Retrying...")
                     contributors_data = None
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay)
             except Exception as e:
-                print(f"Attempt {attempt + 1}/{max_retries}: Error fetching from GitHub API: {e}", file=sys.stderr)
+                logging_utils.log_warn(f"Attempt {attempt + 1}/{max_retries}: Error fetching from GitHub API: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                 else:
-                    print("\nError: Could not fetch GitHub contributor data after multiple attempts.")
-                    print("The GitHub stats API may be temporarily unavailable or still computing statistics.")
-                    print("Please try again in a few minutes.")
+                    logging_utils.log_error("Could not fetch GitHub contributor data after multiple attempts.")
+                    logging_utils.log_error("The GitHub stats API may be temporarily unavailable or still computing statistics.")
+                    logging_utils.log_error("Please try again in a few minutes.")
+                    logging_utils.end_span()
+                    logging_utils.end_span()
+                    logging_utils.write_metrics(exit_code=1)
                     sys.exit(1)
         
         if contributors_data is None:
-            print("\nError: GitHub API returned empty data after multiple attempts.")
-            print("The repository statistics may still be computing. Please try again in a few minutes.")
+            logging_utils.log_error("GitHub API returned empty data after multiple attempts.")
+            logging_utils.log_error("The repository statistics may still be computing. Please try again in a few minutes.")
+            logging_utils.end_span()
+            logging_utils.end_span()
+            logging_utils.write_metrics(exit_code=1)
             sys.exit(1)
+    
+    logging_utils.end_span()
 
     # Process contributors
+    logging_utils.start_span("process_contributors")
     contributor_stats = []
     checked_orgs = {}  # Cache org checks to avoid redundant API calls
     
-    print("Checking contributor organizations...", file=sys.stderr)
+    logging_utils.log_info("Checking contributor organizations...")
 
     for contributor in contributors_data:
         # Skip if author is None (deleted users)
@@ -292,7 +339,7 @@ def main():
                 
                 if checked_orgs[username]:
                     category = 'block_non_goose'
-                    print(f"  ✓ Detected Block employee: @{username}", file=sys.stderr)
+                    logging_utils.log_info(f"  ✓ Detected Block employee: @{username}")
                 else:
                     category = 'external'
             
@@ -308,10 +355,15 @@ def main():
 
     # Sort by score
     contributor_stats.sort(key=lambda x: x['score'], reverse=True)
+    logging_utils.record_metric('total_contributors', len(contributor_stats))
 
     # Separate by category
     block_list = [c for c in contributor_stats if c['category'] == 'block_non_goose']
     external_list = [c for c in contributor_stats if c['category'] == 'external']
+    
+    logging_utils.record_metric('block_contributors', len(block_list))
+    logging_utils.record_metric('external_contributors', len(external_list))
+    logging_utils.end_span()
 
     # Get top 5 from each
     top_external = external_list[:5]
@@ -357,6 +409,9 @@ def main():
     print(f"  External: {len(external_list)}")
     print(f"  Block (non-goose): {len(block_list)}")
     print("=" * 70)
+    
+    logging_utils.end_span()
+    logging_utils.write_metrics(exit_code=0)
 
 if __name__ == "__main__":
     main()

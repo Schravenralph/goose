@@ -7,14 +7,34 @@ This script will be used inside the Docker container to decode GitHub secrets
 import json
 import base64
 import os
+import sys
 import tempfile
 from pathlib import Path
+
+# Add scripts directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def log_debug(self, *args, **kwargs): pass
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
 
 def decode_training_data():
     """
     Decode all available training data from environment variables
     Returns a dictionary with risk levels and their decoded recipes
     """
+    logging_utils.start_span("decode_training_data")
     training_data = {}
     
     # Check for each risk level
@@ -24,6 +44,7 @@ def decode_training_data():
         
         if encoded_data:
             try:
+                logging_utils.start_span(f"decode_{risk_level.lower()}_risk")
                 # Decode the base64 outer layer
                 json_data = base64.b64decode(encoded_data).decode('utf-8')
                 
@@ -37,11 +58,16 @@ def decode_training_data():
                     # Keep the base64 version for reference but don't need it for analysis
                 
                 training_data[risk_level.lower()] = parsed_data
-                print(f"✅ Decoded {len(parsed_data['recipes'])} {risk_level.lower()} risk recipes")
+                recipe_count = len(parsed_data['recipes'])
+                logging_utils.log_info(f"✅ Decoded {recipe_count} {risk_level.lower()} risk recipes")
+                logging_utils.record_metric(f'{risk_level.lower()}_recipes', recipe_count)
+                logging_utils.end_span()
                 
             except Exception as e:
-                print(f"❌ Error decoding {env_var}: {e}")
+                logging_utils.log_error(f"❌ Error decoding {env_var}: {e}")
+                logging_utils.end_span()
     
+    logging_utils.end_span()
     return training_data
 
 def write_training_files(training_data, output_dir="/tmp/training"):
@@ -95,8 +121,10 @@ def write_training_files(training_data, output_dir="/tmp/training"):
     with open(output_path / "training_summary.json", 'w') as f:
         json.dump(summary, f, indent=2)
     
-    print(f"📁 Training data written to: {output_path}")
-    print(f"📊 Total recipes: {summary['total_recipes']}")
+    logging_utils.log_info(f"📁 Training data written to: {output_path}")
+    logging_utils.log_info(f"📊 Total recipes: {summary['total_recipes']}")
+    logging_utils.record_metric('total_recipes', summary['total_recipes'])
+    logging_utils.record_metric('output_dir', str(output_path))
     
     return output_path
 
@@ -143,21 +171,32 @@ def create_goose_instructions(training_data, output_file="/tmp/goose_training_in
     with open(output_file, 'w') as f:
         f.write('\n'.join(instructions))
     
-    print(f"📋 Goose instructions written to: {output_file}")
+    logging_utils.log_info(f"📋 Goose instructions written to: {output_file}")
+    logging_utils.record_metric('instructions_file', str(output_file))
     return output_file
 
 if __name__ == "__main__":
-    print("🔍 Decoding training data from environment variables...")
+    logging_utils.start_span("decode_training_data_main")
+    logging_utils.log_info("🔍 Decoding training data from environment variables...")
     
     training_data = decode_training_data()
     
     if training_data:
+        logging_utils.start_span("write_training_files")
         output_dir = write_training_files(training_data)
-        instructions_file = create_goose_instructions(training_data)
+        logging_utils.end_span()
         
-        print("\n🎯 Training data ready for analysis!")
-        print(f"   Training files: {output_dir}")
-        print(f"   Instructions: {instructions_file}")
+        logging_utils.start_span("create_goose_instructions")
+        instructions_file = create_goose_instructions(training_data)
+        logging_utils.end_span()
+        
+        logging_utils.log_info("\n🎯 Training data ready for analysis!")
+        logging_utils.log_info(f"   Training files: {output_dir}")
+        logging_utils.log_info(f"   Instructions: {instructions_file}")
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=0)
     else:
-        print("❌ No training data found in environment variables")
-        print("   Expected: TRAINING_DATA_LOW, TRAINING_DATA_MEDIUM, TRAINING_DATA_EXTREME")
+        logging_utils.log_error("❌ No training data found in environment variables")
+        logging_utils.log_error("   Expected: TRAINING_DATA_LOW, TRAINING_DATA_MEDIUM, TRAINING_DATA_EXTREME")
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=1)

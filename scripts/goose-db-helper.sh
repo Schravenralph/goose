@@ -363,28 +363,75 @@ apply_migration() {
 rollback_migration() {
     local from_version=$1
 
+    if command -v start_span &> /dev/null; then
+        start_span "rollback_migration"
+    fi
+
     if [[ "${from_version}" == "0" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Cannot rollback from version 0"
+        fi
         echo -e "${RED}ERROR: Cannot rollback from version 0${NC}" >&2
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
     local migration_dir=$(find_migration_dir "${from_version}")
     if [[ -z "${migration_dir}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Migration files not found for rollback" "version=${from_version}"
+        fi
         echo -e "${RED}ERROR: Migration files not found for version ${from_version}${NC}" >&2
         echo -e "${YELLOW}Expected to find directory: ${MIGRATIONS_DIR}/${from_version}_*${NC}"
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
     local down_sql="${migration_dir}/down.sql"
     if [[ ! -f "${down_sql}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Rollback SQL file not found" "version=${from_version}" "sql_file=${down_sql}"
+        fi
         echo -e "${RED}ERROR: Rollback file not found: ${down_sql}${NC}" >&2
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
+    if command -v log_info &> /dev/null; then
+        log_info "Applying rollback" "version=${from_version}" "sql_file=${down_sql}"
+    fi
+
     if ! sqlite3 "${DB_PATH}" < "${down_sql}"; then
+        if command -v log_error &> /dev/null; then
+            log_error "Rollback failed" "version=${from_version}" "sql_file=${down_sql}"
+        fi
         echo -e "${RED}ERROR: Rollback from v${from_version} failed${NC}" >&2
         echo -e "${YELLOW}Check the SQL file: ${down_sql}${NC}"
+        if command -v record_metric &> /dev/null; then
+            record_metric "rollback_errors" "1" "version=${from_version}"
+        fi
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
+    fi
+    
+    if command -v record_metric &> /dev/null; then
+        record_metric "rollbacks_applied" "1" "version=${from_version}"
+    fi
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Rollback applied successfully" "version=${from_version}"
+    fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
     fi
 }
 
@@ -576,17 +623,37 @@ list_backups() {
 restore_backup() {
     local backup_file=$1
 
+    if command -v start_span &> /dev/null; then
+        start_span "restore_backup"
+    fi
+
     if [[ -z "${backup_file}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Backup file not specified"
+        fi
         echo -e "${RED}ERROR: Please specify a backup file to restore${NC}" >&2
         echo "Usage: $0 restore <backup-file>"
         echo ""
         list_backups
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         exit 1
     fi
 
     if [[ ! -f "${backup_file}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Backup file not found" "backup_file=${backup_file}"
+        fi
         echo -e "${RED}ERROR: Backup file not found: ${backup_file}${NC}" >&2
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         exit 1
+    fi
+
+    if command -v log_info &> /dev/null; then
+        log_info "Restoring database backup" "backup_file=${backup_file}" "dry_run=${DRY_RUN}"
     fi
 
     check_db_exists
@@ -611,8 +678,26 @@ restore_backup() {
     echo ""
 
     cp "${backup_file}" "${DB_PATH}"
+    
+    local restored_version=$(get_schema_version)
+    
+    if command -v record_metric &> /dev/null; then
+        record_metric "backup_restored" "1" "schema_version=${restored_version}"
+    fi
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Backup restored successfully" \
+            "backup_file=${backup_file}" \
+            "current_backup=${current_backup}" \
+            "restored_version=${restored_version}"
+    fi
+    
     echo -e "${GREEN}✓ Restored backup from: ${backup_file}${NC}"
     echo "Current database backed up to: ${current_backup}"
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 }
 
 validate_sql_syntax() {
@@ -754,10 +839,27 @@ EOF
 }
 
 generate_migrations() {
+    if command -v start_span &> /dev/null; then
+        start_span "generate_migrations"
+    fi
+    
     if [[ ! -f "${RUST_SESSION_MANAGER}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Rust source file not found" "file=${RUST_SESSION_MANAGER}"
+        fi
         echo -e "${RED}ERROR: Rust source file not found: ${RUST_SESSION_MANAGER}${NC}" >&2
         echo "Make sure you're running this from the goose repository root."
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         exit 1
+    fi
+
+    if command -v log_info &> /dev/null; then
+        log_info "Generating migrations from Rust source" \
+            "source_file=${RUST_SESSION_MANAGER}" \
+            "output_dir=${MIGRATIONS_DIR}" \
+            "clean_mode=${CLEAN_GENERATE}"
     fi
 
     echo -e "${BLUE}=== Generating Migrations from Rust Source ===${NC}"
@@ -842,6 +944,17 @@ generate_migrations() {
         generated_count=$((generated_count + 1))
     done
 
+    if command -v record_metric &> /dev/null; then
+        record_metric "migrations_generated" "$generated_count"
+        record_metric "migrations_skipped" "$skipped_count"
+    fi
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Migration generation complete" \
+            "generated=${generated_count}" \
+            "skipped=${skipped_count}"
+    fi
+
     echo ""
     echo -e "${GREEN}✓ Generation complete!${NC}"
     echo "Generated: $generated_count migrations"
@@ -851,6 +964,10 @@ generate_migrations() {
     echo ""
     echo -e "${YELLOW}Note:${NC} Please review generated rollback SQL (down.sql) files."
     echo "Some migrations may require manual rollback implementation."
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 }
 
 show_help() {
@@ -965,6 +1082,10 @@ show_help() {
 }
 
 main() {
+    if command -v log_info &> /dev/null; then
+        log_info "Goose DB helper script started" "args=$*"
+    fi
+    
     local non_flag_args=()
 
     while [[ $# -gt 0 ]]; do
@@ -986,6 +1107,9 @@ main() {
                 exit 0
                 ;;
             -*)
+                if command -v log_error &> /dev/null; then
+                    log_error "Unknown flag" "flag=$1"
+                fi
                 echo -e "${RED}ERROR: Unknown flag: $1${NC}" >&2
                 echo ""
                 show_help
@@ -999,6 +1123,10 @@ main() {
     done
 
     local command=${non_flag_args[0]:-help}
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Executing command" "command=${command}" "dry_run=${DRY_RUN}"
+    fi
 
     case "${command}" in
         status)
@@ -1048,12 +1176,19 @@ main() {
             show_help
             ;;
         *)
+            if command -v log_error &> /dev/null; then
+                log_error "Unknown command" "command=${command}"
+            fi
             echo -e "${RED}ERROR: Unknown command: ${command}${NC}" >&2
             echo ""
             show_help
             exit 1
             ;;
     esac
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Command completed" "command=${command}" "exit_code=0"
+    fi
 }
 
 main "$@"

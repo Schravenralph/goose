@@ -18,7 +18,12 @@ The following scripts have been enhanced with structured logging:
 **Python Scripts:**
 - `bench-postprocess-scripts/generate_leaderboard.py` - Generate leaderboard from benchmark results
 - `bench-postprocess-scripts/prepare_aggregate_metrics.py` - Prepare aggregate metrics from eval results
+- `bench-postprocess-scripts/llm-judges/llm_judge.py` - LLM judge post-processing script for benchmarks
+- `bench-postprocess-scripts/llm-judges/calculate_final_scores_vibes.py` - Calculate final scores for vibes evaluations
+- `provider-error-proxy/proxy.py` - Provider error proxy for testing Goose error handling
 - `serve-metrics-dashboard.py` - Metrics dashboard server
+- `recipe-scanner/decode-training-data.py` - Decode base64 training data for recipe scanner
+- `documentation/scripts/community_stars.py` - Community stars analysis script
 
 **Linting & Code Quality:**
 - `clippy-lint.sh` - Clippy linting with structured logging

@@ -24,10 +24,28 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Any
 
+# Add parent directory to path for logging_utils import
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+try:
+    import logging_utils
+except ImportError:
+    # Fallback if logging_utils is not available
+    class DummyLogger:
+        def log_info(self, *args, **kwargs): print(*args)
+        def log_warn(self, *args, **kwargs): print(f"WARNING: {args[0] if args else ''}", file=sys.stderr)
+        def log_error(self, *args, **kwargs): print(f"ERROR: {args[0] if args else ''}", file=sys.stderr)
+        def log_debug(self, *args, **kwargs): pass
+        def start_span(self, *args, **kwargs): pass
+        def end_span(self, *args, **kwargs): pass
+        def record_metric(self, *args, **kwargs): pass
+        def write_metrics(self, *args, **kwargs): pass
+    logging_utils = DummyLogger()
+
 try:
     from openai import OpenAI
 except ImportError:
-    print("Error: openai package not found. Please install it with: pip install openai")
+    logging_utils.log_error("openai package not found. Please install it with: pip install openai")
     sys.exit(1)
 
 
@@ -45,10 +63,11 @@ def evaluate_with_openai(prompt: str, text: str, rubric_max_score: int = 2) -> f
     Raises:
         ValueError: If OPENAI_API_KEY environment variable is not set
     """
-    print("Starting OpenAI evaluation...")
+    logging_utils.start_span("openai_evaluation")
+    logging_utils.log_info("Starting OpenAI evaluation...")
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("No OpenAI API key found!")
+        logging_utils.log_error("No OpenAI API key found!")
         raise ValueError("OPENAI_API_KEY environment variable is not set, but is needed to run this evaluation.")
         
     try:
@@ -94,20 +113,21 @@ IMPORTANT:
                         score = float(evaluation.get("score", 0.0))
                         score = max(0.0, min(score, rubric_max_score))
                         scores.append(score)
-                        print(f"Run {i+1} score: {score}")
+                        logging_utils.log_info(f"Run {i+1} score: {score}")
+                        logging_utils.record_metric('evaluation_score', score, run=i+1)
                         break  # Successfully parsed, exit retry loop
                     except (json.JSONDecodeError, ValueError) as e:
                         retry_count += 1
-                        print(f"Error parsing OpenAI response as JSON (attempt {retry_count}/{max_retries}): {str(e)}")
-                        print(f"Response text: {response_text}")
+                        logging_utils.log_warn(f"Error parsing OpenAI response as JSON (attempt {retry_count}/{max_retries}): {str(e)}")
+                        logging_utils.log_debug(f"Response text: {response_text}")
                         if retry_count == max_retries:
                             raise ValueError(f"Failed to parse OpenAI evaluation response after {max_retries} attempts: {str(e)}")
-                        print("Retrying...")
+                        logging_utils.log_info("Retrying...")
                         time.sleep(1)  # Wait 1 second before retrying
                         continue
                 except Exception as e:
                     # For other exceptions (API errors, etc.), raise immediately
-                    print(f"API error: {str(e)}")
+                    logging_utils.log_error(f"API error: {str(e)}")
                     raise
         
         # Count occurrences of each score
@@ -115,7 +135,8 @@ IMPORTANT:
         
         # If there's no single most common score (all scores are different), run one more time
         if len(scores) == 3 and max(score_counts.values()) == 1:
-            print("No majority score found. Running tie-breaker...")
+            logging_utils.log_info("No majority score found. Running tie-breaker...")
+            logging_utils.increment_counter('tie_breakers')
             max_retries = 5
             retry_count = 0
             
@@ -135,43 +156,53 @@ IMPORTANT:
                         score = float(evaluation.get("score", 0.0))
                         score = max(0.0, min(score, rubric_max_score))
                         scores.append(score)
-                        print(f"Tie-breaker score: {score}")
+                        logging_utils.log_info(f"Tie-breaker score: {score}")
+                        logging_utils.record_metric('tie_breaker_score', score)
                         score_counts = Counter(scores)
                         break  # Successfully parsed, exit retry loop
                     except (json.JSONDecodeError, ValueError) as e:
                         retry_count += 1
-                        print(f"Error parsing tie-breaker response as JSON (attempt {retry_count}/{max_retries}): {str(e)}")
-                        print(f"Response text: {response_text}")
+                        logging_utils.log_warn(f"Error parsing tie-breaker response as JSON (attempt {retry_count}/{max_retries}): {str(e)}")
+                        logging_utils.log_debug(f"Response text: {response_text}")
                         if retry_count == max_retries:
                             raise ValueError(f"Failed to parse tie-breaker response after {max_retries} attempts: {str(e)}")
-                        print("Retrying tie-breaker...")
+                        logging_utils.log_info("Retrying tie-breaker...")
                         time.sleep(1)  # Wait 1 second before retrying
                         continue
                 except Exception as e:
                     # For other exceptions (API errors, etc.), raise immediately
-                    print(f"API error in tie-breaker: {str(e)}")
+                    logging_utils.log_error(f"API error in tie-breaker: {str(e)}")
                     raise
         
         # Get the most common score
         most_common_score = score_counts.most_common(1)[0][0]
-        print(f"Most common score: {most_common_score} (occurred {score_counts[most_common_score]} times)")
+        logging_utils.log_info(f"Most common score: {most_common_score} (occurred {score_counts[most_common_score]} times)")
+        logging_utils.record_metric('final_score', most_common_score)
+        logging_utils.record_metric('score_consensus', score_counts[most_common_score])
+        logging_utils.end_span()
         return most_common_score
             
     except Exception as e:
+        logging_utils.end_span()
         if "OPENAI_API_KEY" in str(e):
             raise  # Re-raise API key errors
-        print(f"Error evaluating with OpenAI: {str(e)}")
+        logging_utils.log_error(f"Error evaluating with OpenAI: {str(e)}")
         raise ValueError(f"OpenAI evaluation failed: {str(e)}")
 
 
 def load_eval_results(working_dir: Path) -> Dict[str, Any]:
     """Load the eval-results.json file from the working directory."""
+    logging_utils.start_span("load_eval_results")
     eval_results_path = working_dir / "eval-results.json"
     if not eval_results_path.exists():
+        logging_utils.log_error(f"eval-results.json not found in {working_dir}")
+        logging_utils.end_span()
         raise FileNotFoundError(f"eval-results.json not found in {working_dir}")
     
     with open(eval_results_path, 'r') as f:
-        return json.load(f)
+        result = json.load(f)
+    logging_utils.end_span()
+    return result
 
 
 def load_output_file(working_dir: Path, output_file: str) -> str:
@@ -210,12 +241,15 @@ Score the response on a scale from 0 to 2:
 
 
 def main():
+    logging_utils.start_span("llm_judge_main")
     parser = argparse.ArgumentParser(description="LLM Judge post-processing script for Goose benchmarks")
     parser.add_argument("output_file", type=str, help="Name of the output file to evaluate (e.g., blog_summary_output.txt)")
     parser.add_argument("--rubric-max-score", type=int, default=2, help="Maximum score for the rubric (default: 2)")
     parser.add_argument("--prompt-file", type=str, help="Path to custom evaluation prompt file")
     
     args = parser.parse_args()
+    logging_utils.record_metric('rubric_max_score', args.rubric_max_score)
+    logging_utils.record_metric('output_file', args.output_file)
     
     # Use current working directory
     working_dir = Path.cwd()
@@ -225,19 +259,26 @@ def main():
         eval_results = load_eval_results(working_dir)
         
         # Load the output file to evaluate
+        logging_utils.start_span("load_output_file")
         response_text = load_output_file(working_dir, args.output_file)
+        logging_utils.end_span()
         
         # Load evaluation prompt
+        logging_utils.start_span("load_evaluation_prompt")
         if args.prompt_file:
             with open(args.prompt_file, 'r') as f:
                 evaluation_prompt = f.read().strip()
+            logging_utils.record_metric('prompt_source', 'file')
         else:
             evaluation_prompt = load_evaluation_prompt(working_dir)
+            logging_utils.record_metric('prompt_source', 'default')
+        logging_utils.end_span()
         
         # Evaluate with OpenAI
         score = evaluate_with_openai(evaluation_prompt, response_text, args.rubric_max_score)
         
         # Update eval results with the score
+        logging_utils.start_span("save_results")
         eval_results["metrics"].append([
             "llm_judge_score", 
             {"Float": score}
@@ -248,10 +289,16 @@ def main():
         with open(eval_results_path, 'w') as f:
             json.dump(eval_results, f, indent=2)
         
-        print(f"Successfully updated eval-results.json with LLM judge score: {score}")
+        logging_utils.log_info(f"Successfully updated eval-results.json with LLM judge score: {score}")
+        logging_utils.record_metric('llm_judge_score', score)
+        logging_utils.end_span()
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=0)
         
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logging_utils.log_error(f"Error: {str(e)}")
+        logging_utils.end_span()
+        logging_utils.write_metrics(exit_code=1)
         sys.exit(1)
 
 
