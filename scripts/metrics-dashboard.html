@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Goose Script Metrics Dashboard</title>
+    <title>Goose Metrics Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * {
@@ -16,7 +16,7 @@
             background: #f5f5f5;
         }
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
         }
         .header {
@@ -25,42 +25,32 @@
             border-radius: 8px;
             margin-bottom: 20px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
         }
         .header h1 {
-            margin: 0;
+            margin: 0 0 10px 0;
         }
-        .header-actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
+        .header p {
+            margin: 0 0 15px 0;
+            color: #6b7280;
         }
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        .controls {
             display: flex;
             gap: 15px;
             flex-wrap: wrap;
-            align-items: flex-end;
+            align-items: center;
+            margin-bottom: 15px;
         }
-        .filter-group {
+        .control-group {
             display: flex;
             flex-direction: column;
             gap: 5px;
         }
-        .filter-group label {
-            font-size: 0.9em;
+        .control-group label {
+            font-size: 0.85em;
             color: #6b7280;
             font-weight: 500;
         }
-        .filter-group input, .filter-group select {
+        .control-group input, .control-group select {
             padding: 8px 12px;
             border: 1px solid #d1d5db;
             border-radius: 4px;
@@ -75,7 +65,7 @@
             cursor: pointer;
             font-size: 0.9em;
             font-weight: 500;
-            transition: background-color 0.2s;
+            transition: background 0.2s;
         }
         button:hover {
             background: #1d4ed8;
@@ -84,15 +74,51 @@
             background: #9ca3af;
             cursor: not-allowed;
         }
-        .btn-secondary {
-            background: #6b7280;
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
         }
-        .btn-secondary:hover {
-            background: #4b5563;
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .file-input-label {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #10b981;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .file-input-label:hover {
+            background: #059669;
+        }
+        .status-message {
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        .status-message.info {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        .status-message.error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .status-message.success {
+            background: #d1fae5;
+            color: #065f46;
         }
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 20px;
             margin-bottom: 20px;
         }
@@ -112,6 +138,9 @@
             font-size: 0.9em;
             margin-top: 5px;
         }
+        .status-success { color: #10b981; }
+        .status-error { color: #ef4444; }
+        .status-warning { color: #f59e0b; }
         .chart-container {
             background: white;
             padding: 20px;
@@ -124,233 +153,310 @@
             font-weight: bold;
             margin-bottom: 15px;
         }
-        .status-success { color: #10b981; }
-        .status-error { color: #ef4444; }
-        .status-warning { color: #f59e0b; }
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #6b7280;
+        .chart-wrapper {
+            position: relative;
+            height: 300px;
         }
-        .error {
-            background: #fee2e2;
-            color: #991b1b;
-            padding: 15px;
-            border-radius: 4px;
+        .data-table {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
             margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-x: auto;
         }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
+        .data-table table {
+            width: 100%;
+            border-collapse: collapse;
         }
-        .status-indicator.success { background: #10b981; }
-        .status-indicator.error { background: #ef4444; }
-        .status-indicator.loading { background: #f59e0b; animation: pulse 2s infinite; }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+        .data-table th,
+        .data-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .data-table th {
+            background: #f9fafb;
+            font-weight: 600;
+            color: #374151;
+        }
+        .data-table tr:hover {
+            background: #f9fafb;
+        }
+        .hidden {
+            display: none;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div>
-                <h1>🐦 Goose Script Metrics Dashboard</h1>
-                <p style="margin: 5px 0 0 0; color: #6b7280;">Real-time metrics and analytics for script executions</p>
+            <h1>🐦 Goose Metrics Dashboard</h1>
+            <p>Visualize script execution metrics, success rates, performance trends, and issue tracking</p>
+            
+            <div class="controls">
+                <div class="file-input-wrapper">
+                    <input type="file" id="metricsFileInput" multiple accept=".json" />
+                    <label for="metricsFileInput" class="file-input-label">📁 Select Metrics Files</label>
+                </div>
+                
+                <div class="control-group">
+                    <label for="startDate">Start Date</label>
+                    <input type="date" id="startDate" />
+                </div>
+                
+                <div class="control-group">
+                    <label for="endDate">End Date</label>
+                    <input type="date" id="endDate" />
+                </div>
+                
+                <div class="control-group">
+                    <label for="scriptFilter">Script Filter</label>
+                    <select id="scriptFilter">
+                        <option value="">All Scripts</option>
+                    </select>
+                </div>
+                
+                <button onclick="applyFilters()">Apply Filters</button>
+                <button onclick="exportData()">📥 Export Data</button>
+                <button onclick="clearData()">🗑️ Clear</button>
             </div>
-            <div class="header-actions">
-                <button onclick="exportData('csv')">Export CSV</button>
-                <button onclick="exportData('json')">Export JSON</button>
-                <button onclick="loadMetrics()" id="refreshBtn">
-                    <span id="statusIndicator" class="status-indicator success"></span>
-                    Refresh Metrics
-                </button>
-            </div>
+            
+            <div id="statusMessage" class="status-message hidden"></div>
         </div>
 
-        <div id="errorContainer"></div>
-
-        <div class="filters">
-            <div class="filter-group">
-                <label for="startDate">Start Date</label>
-                <input type="datetime-local" id="startDate">
+        <div class="metrics-grid" id="metricsGrid">
+            <div class="metric-card">
+                <div class="metric-value">-</div>
+                <div class="metric-label">Total Runs</div>
             </div>
-            <div class="filter-group">
-                <label for="endDate">End Date</label>
-                <input type="datetime-local" id="endDate">
+            <div class="metric-card">
+                <div class="metric-value status-success">-</div>
+                <div class="metric-label">Success Rate</div>
             </div>
-            <div class="filter-group">
-                <label for="scriptFilter">Script</label>
-                <select id="scriptFilter">
-                    <option value="">All Scripts</option>
-                </select>
+            <div class="metric-card">
+                <div class="metric-value">-</div>
+                <div class="metric-label">Avg Duration</div>
             </div>
-            <div class="filter-group">
-                <button onclick="applyFilters()" class="btn-secondary">Apply Filters</button>
+            <div class="metric-card">
+                <div class="metric-value status-warning">-</div>
+                <div class="metric-label">Total Warnings</div>
             </div>
-            <div class="filter-group">
-                <button onclick="clearFilters()" class="btn-secondary">Clear</button>
+            <div class="metric-card">
+                <div class="metric-value status-error">-</div>
+                <div class="metric-label">Total Errors</div>
             </div>
-        </div>
-
-        <div id="metricsGrid" class="loading">
-            Loading metrics...
         </div>
 
         <div class="chart-container">
             <div class="chart-title">Execution Duration Over Time</div>
-            <canvas id="durationChart"></canvas>
+            <div class="chart-wrapper">
+                <canvas id="durationChart"></canvas>
+            </div>
         </div>
 
         <div class="chart-container">
-            <div class="chart-title">Success Rate</div>
-            <canvas id="successRateChart"></canvas>
+            <div class="chart-title">Success Rate Over Time</div>
+            <div class="chart-wrapper">
+                <canvas id="successRateChart"></canvas>
+            </div>
         </div>
 
         <div class="chart-container">
-            <div class="chart-title">Warnings and Errors</div>
-            <canvas id="issuesChart"></canvas>
+            <div class="chart-title">Warnings and Errors Over Time</div>
+            <div class="chart-wrapper">
+                <canvas id="issuesChart"></canvas>
+            </div>
+        </div>
+
+        <div class="data-table">
+            <div class="chart-title">Recent Executions</div>
+            <table id="executionsTable">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Script</th>
+                        <th>Duration (s)</th>
+                        <th>Status</th>
+                        <th>Warnings</th>
+                        <th>Errors</th>
+                        <th>Exit Code</th>
+                    </tr>
+                </thead>
+                <tbody id="executionsTableBody">
+                    <tr>
+                        <td colspan="7" style="text-align: center; color: #6b7280;">No data loaded. Please select metrics files.</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
     <script>
-        // Configuration
-        const API_BASE_URL = window.location.origin;
-        const API_ENDPOINT = `${API_BASE_URL}/api/metrics`;
-        
+        let allMetrics = [];
+        let filteredMetrics = [];
         let durationChart, successRateChart, issuesChart;
-        let currentMetrics = null;
-        let autoRefreshInterval = null;
 
-        // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            loadMetrics();
-            setupAutoRefresh();
-            
-            // Set default date range (last 7 days)
-            const endDate = new Date();
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - 7);
-            
-            document.getElementById('endDate').value = formatDateTimeLocal(endDate);
-            document.getElementById('startDate').value = formatDateTimeLocal(startDate);
-        });
+        // Initialize date filters to last 7 days
+        const today = new Date();
+        const lastWeek = new Date(today);
+        lastWeek.setDate(lastWeek.getDate() - 7);
+        document.getElementById('endDate').value = today.toISOString().split('T')[0];
+        document.getElementById('startDate').value = lastWeek.toISOString().split('T')[0];
 
-        function formatDateTimeLocal(date) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const hours = String(date.getHours()).padStart(2, '0');
-            const minutes = String(date.getMinutes()).padStart(2, '0');
-            return `${year}-${month}-${day}T${hours}:${minutes}`;
-        }
+        // File input handler
+        document.getElementById('metricsFileInput').addEventListener('change', async function(e) {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
 
-        function setupAutoRefresh() {
-            // Auto-refresh every 30 seconds
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-            }
-            autoRefreshInterval = setInterval(loadMetrics, 30000);
-        }
-
-        async function loadMetrics() {
-            const statusIndicator = document.getElementById('statusIndicator');
-            const refreshBtn = document.getElementById('refreshBtn');
-            const errorContainer = document.getElementById('errorContainer');
-            
-            statusIndicator.className = 'status-indicator loading';
-            refreshBtn.disabled = true;
-            errorContainer.innerHTML = '';
+            showStatus('Loading metrics files...', 'info');
             
             try {
-                const params = new URLSearchParams();
-                
-                const startDate = document.getElementById('startDate').value;
-                const endDate = document.getElementById('endDate').value;
-                const scriptFilter = document.getElementById('scriptFilter').value;
-                
-                if (startDate) {
-                    params.append('start_date', new Date(startDate).toISOString());
-                }
-                if (endDate) {
-                    params.append('end_date', new Date(endDate).toISOString());
-                }
-                if (scriptFilter) {
-                    params.append('script_name', scriptFilter);
+                const loadedMetrics = [];
+                for (const file of files) {
+                    const text = await file.text();
+                    try {
+                        const metric = JSON.parse(text);
+                        // Parse timestamp from filename or use start_time
+                        const timestamp = parseTimestampFromMetric(metric);
+                        metric.parsed_timestamp = timestamp;
+                        loadedMetrics.push(metric);
+                    } catch (err) {
+                        console.error(`Error parsing ${file.name}:`, err);
+                    }
                 }
                 
-                const url = params.toString() ? `${API_ENDPOINT}?${params.toString()}` : API_ENDPOINT;
-                const response = await fetch(url);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                
-                const metrics = await response.json();
-                
-                if (metrics.error) {
-                    throw new Error(metrics.error);
-                }
-                
-                currentMetrics = metrics;
-                updateScriptFilter(metrics.scripts || []);
-                updateMetricsGrid(metrics);
-                updateCharts(metrics);
-                
-                statusIndicator.className = 'status-indicator success';
+                allMetrics = [...allMetrics, ...loadedMetrics];
+                updateScriptFilter();
+                applyFilters();
+                showStatus(`Loaded ${loadedMetrics.length} metrics file(s). Total: ${allMetrics.length}`, 'success');
             } catch (error) {
-                console.error('Error loading metrics:', error);
-                errorContainer.innerHTML = `<div class="error">Error loading metrics: ${error.message}</div>`;
-                statusIndicator.className = 'status-indicator error';
-            } finally {
-                refreshBtn.disabled = false;
+                console.error('Error loading files:', error);
+                showStatus('Error loading metrics files: ' + error.message, 'error');
             }
+        });
+
+        function parseTimestampFromMetric(metric) {
+            // Try to parse from start_time (Unix timestamp with nanoseconds)
+            if (metric.start_time) {
+                const startTime = parseFloat(metric.start_time);
+                if (!isNaN(startTime)) {
+                    // Convert to milliseconds
+                    return new Date(startTime * 1000);
+                }
+            }
+            
+            // Try to parse from filename pattern if available
+            // Format: {script-name}-metrics-{YYYYMMDD_HHMMSS}.json
+            // For now, use current time as fallback
+            return new Date();
         }
 
-        function updateScriptFilter(scripts) {
+        function updateScriptFilter() {
             const scriptFilter = document.getElementById('scriptFilter');
-            const currentValue = scriptFilter.value;
+            const scripts = [...new Set(allMetrics.map(m => m.script_name || 'unknown'))].sort();
             
             // Clear existing options except "All Scripts"
             scriptFilter.innerHTML = '<option value="">All Scripts</option>';
-            
-            // Add script options
             scripts.forEach(script => {
                 const option = document.createElement('option');
                 option.value = script;
                 option.textContent = script;
                 scriptFilter.appendChild(option);
             });
-            
-            // Restore previous selection if it still exists
-            if (currentValue && scripts.includes(currentValue)) {
-                scriptFilter.value = currentValue;
-            }
         }
 
         function applyFilters() {
-            loadMetrics();
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            const scriptFilter = document.getElementById('scriptFilter').value;
+
+            filteredMetrics = allMetrics.filter(metric => {
+                // Date filter
+                if (startDate || endDate) {
+                    const metricDate = metric.parsed_timestamp;
+                    if (!metricDate) return false;
+                    
+                    const metricDateStr = metricDate.toISOString().split('T')[0];
+                    if (startDate && metricDateStr < startDate) return false;
+                    if (endDate && metricDateStr > endDate) return false;
+                }
+
+                // Script filter
+                if (scriptFilter && (metric.script_name || 'unknown') !== scriptFilter) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            updateDashboard();
         }
 
-        function clearFilters() {
-            document.getElementById('startDate').value = '';
-            document.getElementById('endDate').value = '';
-            document.getElementById('scriptFilter').value = '';
-            loadMetrics();
+        function updateDashboard() {
+            if (filteredMetrics.length === 0) {
+                showStatus('No metrics match the current filters.', 'info');
+                clearCharts();
+                return;
+            }
+
+            // Calculate aggregated metrics
+            const totalRuns = filteredMetrics.length;
+            const successfulRuns = filteredMetrics.filter(m => {
+                const exitCode = parseInt(m.exit_code || '1');
+                return exitCode === 0;
+            }).length;
+            const successRate = totalRuns > 0 ? ((successfulRuns / totalRuns) * 100).toFixed(1) : 0;
+            
+            const durations = filteredMetrics
+                .map(m => parseFloat(m.duration || '0'))
+                .filter(d => !isNaN(d) && d > 0);
+            const avgDuration = durations.length > 0 
+                ? (durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(2)
+                : 0;
+
+            const totalWarnings = filteredMetrics.reduce((sum, m) => {
+                return sum + (parseInt(m.clippy_warnings || '0') + 
+                             parseInt(m.baseline_rules_failed || '0') + 
+                             parseInt(m.tls_check_banned_found || '0'));
+            }, 0);
+
+            const totalErrors = filteredMetrics.reduce((sum, m) => {
+                return sum + (parseInt(m.clippy_errors || '0') + 
+                             (parseInt(m.exit_code || '1') !== 0 ? 1 : 0));
+            }, 0);
+
+            // Update metrics grid
+            updateMetricsGrid({
+                totalRuns,
+                successRate,
+                avgDuration,
+                totalWarnings,
+                totalErrors
+            });
+
+            // Prepare data for charts
+            const chartData = filteredMetrics
+                .map(m => ({
+                    date: m.parsed_timestamp || new Date(),
+                    duration: parseFloat(m.duration || '0'),
+                    success: parseInt(m.exit_code || '1') === 0,
+                    warnings: parseInt(m.clippy_warnings || '0') + 
+                             parseInt(m.baseline_rules_failed || '0') + 
+                             parseInt(m.tls_check_banned_found || '0'),
+                    errors: parseInt(m.clippy_errors || '0') + 
+                           (parseInt(m.exit_code || '1') !== 0 ? 1 : 0),
+                    script: m.script_name || 'unknown',
+                    exitCode: m.exit_code || '1'
+                }))
+                .sort((a, b) => a.date - b.date);
+
+            updateCharts(chartData);
+            updateTable(chartData);
         }
 
         function updateMetricsGrid(metrics) {
             const grid = document.getElementById('metricsGrid');
-            
-            if (metrics.totalRuns === 0) {
-                grid.innerHTML = '<div class="loading">No metrics data available. Run some scripts to generate metrics.</div>';
-                return;
-            }
-            
             grid.innerHTML = `
                 <div class="metric-card">
                     <div class="metric-value">${metrics.totalRuns}</div>
@@ -361,7 +467,7 @@
                     <div class="metric-label">Success Rate</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value">${metrics.avgDuration.toFixed(2)}s</div>
+                    <div class="metric-value">${metrics.avgDuration}s</div>
                     <div class="metric-label">Avg Duration</div>
                 </div>
                 <div class="metric-card">
@@ -375,28 +481,16 @@
             `;
         }
 
-        function updateCharts(metrics) {
-            if (!metrics.recentRuns || metrics.recentRuns.length === 0) {
-                // Clear charts if no data
-                if (durationChart) durationChart.destroy();
-                if (successRateChart) successRateChart.destroy();
-                if (issuesChart) issuesChart.destroy();
-                return;
-            }
-            
-            const labels = metrics.recentRuns.map(r => {
-                const date = new Date(r.date);
-                return date.toLocaleString();
-            });
-            const durations = metrics.recentRuns.map(r => r.duration || 0);
-            const successes = metrics.recentRuns.map(r => r.success ? 1 : 0);
-            const warnings = metrics.recentRuns.map(r => r.warnings || 0);
-            const errors = metrics.recentRuns.map(r => r.errors || 0);
+        function updateCharts(data) {
+            const labels = data.map(d => d.date.toLocaleString());
+            const durations = data.map(d => d.duration);
+            const successRates = data.map(d => d.success ? 100 : 0);
+            const warnings = data.map(d => d.warnings);
+            const errors = data.map(d => d.errors);
 
             // Duration Chart
             if (durationChart) durationChart.destroy();
-            const durationCtx = document.getElementById('durationChart').getContext('2d');
-            durationChart = new Chart(durationCtx, {
+            durationChart = new Chart(document.getElementById('durationChart'), {
                 type: 'line',
                 data: {
                     labels: labels,
@@ -411,39 +505,54 @@
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: true,
+                    maintainAspectRatio: false,
                     scales: {
                         y: { beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: { display: true }
                     }
                 }
             });
 
             // Success Rate Chart
             if (successRateChart) successRateChart.destroy();
-            const successCtx = document.getElementById('successRateChart').getContext('2d');
-            successRateChart = new Chart(successCtx, {
-                type: 'bar',
+            successRateChart = new Chart(document.getElementById('successRateChart'), {
+                type: 'line',
                 data: {
                     labels: labels,
                     datasets: [{
-                        label: 'Success (1) / Failure (0)',
-                        data: successes,
-                        backgroundColor: successes.map(s => s ? '#10b981' : '#ef4444')
+                        label: 'Success Rate (%)',
+                        data: successRates,
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4,
+                        fill: true
                     }]
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: true,
+                    maintainAspectRatio: false,
                     scales: {
-                        y: { beginAtZero: true, max: 1, ticks: { stepSize: 1 } }
+                        y: { 
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true }
                     }
                 }
             });
 
             // Issues Chart
             if (issuesChart) issuesChart.destroy();
-            const issuesCtx = document.getElementById('issuesChart').getContext('2d');
-            issuesChart = new Chart(issuesCtx, {
+            issuesChart = new Chart(document.getElementById('issuesChart'), {
                 type: 'bar',
                 data: {
                     labels: labels,
@@ -462,57 +571,105 @@
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: true,
+                    maintainAspectRatio: false,
                     scales: {
                         y: { beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: { display: true }
                     }
                 }
             });
         }
 
-        function exportData(format) {
-            if (!currentMetrics) {
-                alert('No data to export. Please load metrics first.');
+        function updateTable(data) {
+            const tbody = document.getElementById('executionsTableBody');
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6b7280;">No data to display.</td></tr>';
                 return;
             }
-            
-            let content, mimeType, filename;
-            
-            if (format === 'csv') {
-                // Convert to CSV
-                const headers = ['Date', 'Script', 'Duration (s)', 'Success', 'Warnings', 'Errors', 'Trace ID'];
-                const rows = currentMetrics.recentRuns.map(r => [
-                    r.date,
-                    r.script_name || '',
-                    r.duration || 0,
-                    r.success ? 'Yes' : 'No',
-                    r.warnings || 0,
-                    r.errors || 0,
-                    r.trace_id || ''
-                ]);
-                
-                content = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
-                mimeType = 'text/csv';
-                filename = `goose-metrics-${new Date().toISOString().split('T')[0]}.csv`;
-            } else {
-                // JSON export
-                content = JSON.stringify(currentMetrics, null, 2);
-                mimeType = 'application/json';
-                filename = `goose-metrics-${new Date().toISOString().split('T')[0]}.json`;
+
+            // Show most recent 50 entries
+            const recentData = data.slice(-50).reverse();
+            tbody.innerHTML = recentData.map(d => `
+                <tr>
+                    <td>${d.date.toLocaleString()}</td>
+                    <td>${d.script}</td>
+                    <td>${d.duration.toFixed(2)}</td>
+                    <td><span class="${d.success ? 'status-success' : 'status-error'}">${d.success ? '✓ Success' : '✗ Failed'}</span></td>
+                    <td><span class="status-warning">${d.warnings}</span></td>
+                    <td><span class="status-error">${d.errors}</span></td>
+                    <td>${d.exitCode}</td>
+                </tr>
+            `).join('');
+        }
+
+        function clearCharts() {
+            if (durationChart) {
+                durationChart.destroy();
+                durationChart = null;
+            }
+            if (successRateChart) {
+                successRateChart.destroy();
+                successRateChart = null;
+            }
+            if (issuesChart) {
+                issuesChart.destroy();
+                issuesChart = null;
             }
             
-            // Create download link
-            const blob = new Blob([content], { type: mimeType });
+            document.getElementById('executionsTableBody').innerHTML = 
+                '<tr><td colspan="7" style="text-align: center; color: #6b7280;">No data to display.</td></tr>';
+        }
+
+        function exportData() {
+            if (filteredMetrics.length === 0) {
+                showStatus('No data to export.', 'error');
+                return;
+            }
+
+            const exportData = {
+                exportDate: new Date().toISOString(),
+                totalRecords: filteredMetrics.length,
+                metrics: filteredMetrics
+            };
+
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = filename;
+            a.download = `goose-metrics-export-${new Date().toISOString().split('T')[0]}.json`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
+            
+            showStatus('Data exported successfully.', 'success');
+        }
+
+        function clearData() {
+            if (confirm('Are you sure you want to clear all loaded data?')) {
+                allMetrics = [];
+                filteredMetrics = [];
+                updateScriptFilter();
+                clearCharts();
+                document.getElementById('metricsFileInput').value = '';
+                showStatus('Data cleared.', 'info');
+            }
+        }
+
+        function showStatus(message, type) {
+            const statusEl = document.getElementById('statusMessage');
+            statusEl.textContent = message;
+            statusEl.className = `status-message ${type}`;
+            statusEl.classList.remove('hidden');
+            
+            if (type === 'success' || type === 'info') {
+                setTimeout(() => {
+                    statusEl.classList.add('hidden');
+                }, 5000);
+            }
         }
     </script>
 </body>
 </html>
-

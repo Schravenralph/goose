@@ -176,7 +176,7 @@ send_email_alert() {
             echo "$body"
         } | sendmail "$ALERT_EMAIL_TO" 2>/dev/null || true
     else
-        log_alert "$SEVERITY_WARN" "email_alert_failed" "Email alert requested but mail/sendmail not available" "{\"severity\":\"$severity\"}"
+        log_alert "$SEVERITY_LOW" "email_alert_failed" "Email alert requested but mail/sendmail not available" "{\"severity\":\"$severity\"}"
     fi
 }
 
