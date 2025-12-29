@@ -22,28 +22,30 @@ COMPRESS_ARCHIVES="${COMPRESS_ARCHIVES:-true}"
 
 # Display usage information
 function show_usage() {
-    echo "Usage: $0 [options]"
-    echo ""
-    echo "Options:"
-    echo "  --log-dir DIR              Log directory (default: /tmp/goose-logs)"
-    echo "  --archive-dir DIR          Archive directory (default: LOG_DIR/archive)"
-    echo "  --retention-days DAYS      Days to keep regular logs (default: 30)"
-    echo "  --archive-retention-days DAYS  Days to keep archived logs (default: 365)"
-    echo "  --metrics-retention-days DAYS  Days to keep metrics files (default: 90)"
-    echo "  --max-log-size-mb MB       Maximum log file size in MB before rotation (default: 100)"
-    echo "  --compress                 Compress archived logs (default: true)"
-    echo "  --no-compress              Do not compress archived logs"
-    echo "  --dry-run                  Show what would be done without making changes"
-    echo "  -h, --help                 Show this help message"
-    echo ""
-    echo "Environment Variables:"
-    echo "  LOG_DIR                    Log directory"
-    echo "  ARCHIVE_DIR                Archive directory"
-    echo "  RETENTION_DAYS             Retention period for regular logs (days)"
-    echo "  ARCHIVE_RETENTION_DAYS     Retention period for archived logs (days)"
-    echo "  METRICS_RETENTION_DAYS     Retention period for metrics files (days)"
-    echo "  MAX_LOG_SIZE_MB            Maximum log file size before rotation (MB)"
-    echo "  COMPRESS_ARCHIVES          Compress archives (true/false)"
+    cat <<EOF
+Usage: $0 [options]
+
+Options:
+  --log-dir DIR              Log directory (default: /tmp/goose-logs)
+  --archive-dir DIR          Archive directory (default: LOG_DIR/archive)
+  --retention-days DAYS      Days to keep regular logs (default: 30)
+  --archive-retention-days DAYS  Days to keep archived logs (default: 365)
+  --metrics-retention-days DAYS  Days to keep metrics files (default: 90)
+  --max-log-size-mb MB       Maximum log file size in MB before rotation (default: 100)
+  --compress                 Compress archived logs (default: true)
+  --no-compress              Do not compress archived logs
+  --dry-run                  Show what would be done without making changes
+  -h, --help                 Show this help message
+
+Environment Variables:
+  LOG_DIR                    Log directory
+  ARCHIVE_DIR                Archive directory
+  RETENTION_DAYS             Retention period for regular logs (days)
+  ARCHIVE_RETENTION_DAYS     Retention period for archived logs (days)
+  METRICS_RETENTION_DAYS     Retention period for metrics files (days)
+  MAX_LOG_SIZE_MB            Maximum log file size before rotation (MB)
+  COMPRESS_ARCHIVES          Compress archives (true/false)
+EOF
 }
 
 # Parse command line arguments
@@ -92,7 +94,11 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         *)
-            echo "Unknown option: $1" >&2
+            if command -v log_error &> /dev/null; then
+                log_error "Unknown option: $1"
+            else
+                echo "Unknown option: $1" >&2
+            fi
             show_usage
             exit 1
             ;;
@@ -158,6 +164,8 @@ if command -v log_info &> /dev/null; then
         "archive_retention_days=$ARCHIVE_RETENTION_DAYS" \
         "metrics_retention_days=$METRICS_RETENTION_DAYS" \
         "dry_run=$DRY_RUN"
+else
+    echo "Starting log cleanup"
 fi
 
 # Function to check if log file contains errors or failures
@@ -219,8 +227,14 @@ get_file_size() {
 }
 
 # Process log files
+if command -v start_span &> /dev/null; then
+    start_span "process_log_files"
+fi
+
 if command -v log_info &> /dev/null; then
-    log_info "Processing log files in $LOG_DIR"
+    log_info "Processing log files" "log_dir=$LOG_DIR"
+else
+    echo "Processing log files in $LOG_DIR"
 fi
 
 while IFS= read -r -d '' file; do
@@ -278,9 +292,19 @@ while IFS= read -r -d '' file; do
     fi
 done < <(find "$LOG_DIR" -maxdepth 1 -type f \( -name "*.jsonl" -o -name "*.json" \) -print0 2>/dev/null || true)
 
+if command -v end_span &> /dev/null; then
+    end_span
+fi
+
 # Process metrics files separately
+if command -v start_span &> /dev/null; then
+    start_span "process_metrics_files"
+fi
+
 if command -v log_info &> /dev/null; then
     log_info "Processing metrics files"
+else
+    echo "Processing metrics files"
 fi
 
 while IFS= read -r -d '' file; do
@@ -331,10 +355,20 @@ while IFS= read -r -d '' file; do
     fi
 done < <(find "$LOG_DIR" -maxdepth 1 -type f -name "*-metrics-*.json" -print0 2>/dev/null || true)
 
+if command -v end_span &> /dev/null; then
+    end_span
+fi
+
 # Clean up old archives
 if [[ -d "$ARCHIVE_DIR" ]]; then
+    if command -v start_span &> /dev/null; then
+        start_span "cleanup_archives"
+    fi
+    
     if command -v log_info &> /dev/null; then
         log_info "Cleaning up old archives"
+    else
+        echo "Cleaning up old archives"
     fi
     
     while IFS= read -r -d '' file; do
@@ -357,12 +391,22 @@ if [[ -d "$ARCHIVE_DIR" ]]; then
             fi
         fi
     done < <(find "$ARCHIVE_DIR" -type f -print0 2>/dev/null || true)
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 fi
 
 # Log rotation based on size (optional - log files already have timestamps, so this is less critical)
 # But we can still check and warn about large files
+if command -v start_span &> /dev/null; then
+    start_span "check_large_files"
+fi
+
 if command -v log_info &> /dev/null; then
     log_info "Checking for large log files"
+else
+    echo "Checking for large log files"
 fi
 
 while IFS= read -r -d '' file; do
@@ -380,6 +424,10 @@ while IFS= read -r -d '' file; do
     fi
 done < <(find "$LOG_DIR" -maxdepth 1 -type f \( -name "*.jsonl" -o -name "*.json" \) -print0 2>/dev/null || true)
 
+if command -v end_span &> /dev/null; then
+    end_span
+fi
+
 # Summary
 if command -v log_info &> /dev/null; then
     log_info "Cleanup summary" \
@@ -396,6 +444,7 @@ if command -v log_info &> /dev/null; then
         record_metric "cleanup_archived_logs" "$STATS_ARCHIVED_LOGS"
         record_metric "cleanup_compressed" "$STATS_COMPRESSED"
         record_metric "cleanup_deleted_archives" "$STATS_DELETED_ARCHIVES"
+        record_metric "cleanup_operations_completed" "$((STATS_DELETED_LOGS + STATS_DELETED_METRICS + STATS_ARCHIVED_LOGS + STATS_DELETED_ARCHIVES))"
     fi
     
     end_span

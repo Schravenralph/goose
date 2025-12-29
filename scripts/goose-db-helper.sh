@@ -170,13 +170,43 @@ get_table_schema() {
 }
 
 create_backup() {
+    if command -v start_span &> /dev/null; then
+        start_span "create_backup"
+    fi
+    
     check_db_exists
     mkdir -p "${BACKUP_DIR}"
     local timestamp=$(date +%Y%m%d_%H%M%S)
-    local backup_path="${BACKUP_DIR}/sessions_v$(get_schema_version)_${timestamp}.db"
+    local schema_version=$(get_schema_version)
+    local backup_path="${BACKUP_DIR}/sessions_v${schema_version}_${timestamp}.db"
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Creating database backup" "db_path=${DB_PATH}" "backup_path=${backup_path}" "schema_version=${schema_version}"
+    fi
+    
     cp "${DB_PATH}" "${backup_path}"
+    
+    local backup_size
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        backup_size=$(stat -f "%z" "${backup_path}" 2>/dev/null || echo "0")
+    else
+        backup_size=$(stat -c "%s" "${backup_path}" 2>/dev/null || echo "0")
+    fi
+    
+    if command -v record_metric &> /dev/null; then
+        record_metric "backup_created" "1" "schema_version=${schema_version}" "size=${backup_size}"
+    fi
+    
     echo -e "${GREEN}✓ Backup created: ${backup_path}${NC}"
     echo "${backup_path}"
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Backup created successfully" "backup_path=${backup_path}" "size=${backup_size} bytes"
+    fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 }
 
 show_version_history() {
@@ -184,15 +214,25 @@ show_version_history() {
 }
 
 show_status() {
+    if command -v start_span &> /dev/null; then
+        start_span "show_status"
+    fi
+    
     echo -e "${BLUE}=== Goose Database Status ===${NC}"
     echo "Database path: ${DB_PATH}"
     echo ""
 
     if [[ ! -f "${DB_PATH}" ]]; then
+        if command -v log_info &> /dev/null; then
+            log_info "Database status check" "db_path=${DB_PATH}" "status=not_found"
+        fi
         echo -e "${YELLOW}Status: No database found${NC}"
         echo ""
         echo "This is normal if you haven't run Goose yet."
         echo "Once you run Goose, a database will be created automatically."
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return
     fi
 
@@ -217,39 +257,106 @@ show_status() {
     echo "  Messages: ${message_count}"
     echo ""
 
+    if command -v record_metric &> /dev/null; then
+        record_metric "db_status_session_count" "$session_count"
+        record_metric "db_status_message_count" "$message_count"
+        record_metric "db_status_schema_version" "$version"
+        record_metric "db_status_latest_version" "$latest_version"
+    fi
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Database status" \
+            "db_path=${DB_PATH}" \
+            "schema_version=${version}" \
+            "latest_version=${latest_version}" \
+            "session_count=${session_count}" \
+            "message_count=${message_count}"
+    fi
+
     if [[ ${version} -eq ${latest_version} ]]; then
         echo -e "${GREEN}✓ Database is at the latest schema version${NC}"
     elif [[ ${version} -lt ${latest_version} ]]; then
         echo -e "${YELLOW}⚠ Database can be upgraded to v${latest_version}${NC}"
         echo "  Run: $0 migrate-to ${latest_version}"
     fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 }
 
 apply_migration() {
     local target_version=$1
 
+    if command -v start_span &> /dev/null; then
+        start_span "apply_migration"
+    fi
+
     if [[ "${target_version}" == "0" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Cannot migrate forward to version 0"
+        fi
         echo -e "${RED}ERROR: Cannot migrate forward to version 0${NC}" >&2
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
     local migration_dir=$(find_migration_dir "${target_version}")
     if [[ -z "${migration_dir}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Migration files not found" "version=${target_version}" "expected_dir=${MIGRATIONS_DIR}/${target_version}_*"
+        fi
         echo -e "${RED}ERROR: Migration files not found for version ${target_version}${NC}" >&2
         echo -e "${YELLOW}Expected to find directory: ${MIGRATIONS_DIR}/${target_version}_*${NC}"
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
     local up_sql="${migration_dir}/up.sql"
     if [[ ! -f "${up_sql}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Migration SQL file not found" "version=${target_version}" "sql_file=${up_sql}"
+        fi
         echo -e "${RED}ERROR: Migration file not found: ${up_sql}${NC}" >&2
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
+    if command -v log_info &> /dev/null; then
+        log_info "Applying migration" "version=${target_version}" "sql_file=${up_sql}"
+    fi
+
     if ! sqlite3 "${DB_PATH}" < "${up_sql}"; then
+        if command -v log_error &> /dev/null; then
+            log_error "Migration failed" "version=${target_version}" "sql_file=${up_sql}"
+        fi
         echo -e "${RED}ERROR: Migration to v${target_version} failed${NC}" >&2
         echo -e "${YELLOW}Check the SQL file: ${up_sql}${NC}"
+        if command -v record_metric &> /dev/null; then
+            record_metric "migration_errors" "1" "version=${target_version}"
+        fi
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
+    fi
+    
+    if command -v record_metric &> /dev/null; then
+        record_metric "migrations_applied" "1" "version=${target_version}"
+    fi
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Migration applied successfully" "version=${target_version}"
+    fi
+    
+    if command -v end_span &> /dev/null; then
+        end_span
     fi
 }
 
@@ -285,17 +392,33 @@ migrate_to_version() {
     local target_version=$1
     local latest_version=$(get_latest_version)
 
+    if command -v start_span &> /dev/null; then
+        start_span "migrate_to_version"
+    fi
+
     if [[ -z "${target_version}" ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Target version not specified"
+        fi
         echo -e "${RED}ERROR: Please specify a target version${NC}" >&2
         echo "Usage: $0 migrate-to <version>"
         echo ""
         echo "Available versions: 0 to ${latest_version}"
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
     if [[ ! "${target_version}" =~ ^[0-9]+$ ]] || [[ ${target_version} -lt 0 ]] || [[ ${target_version} -gt ${latest_version} ]]; then
+        if command -v log_error &> /dev/null; then
+            log_error "Invalid target version" "target_version=${target_version}" "latest_version=${latest_version}"
+        fi
         echo -e "${RED}ERROR: Invalid version: ${target_version}${NC}" >&2
         echo "Valid versions are: 0 to ${latest_version}"
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 1
     fi
 
@@ -303,8 +426,18 @@ migrate_to_version() {
     local current_version=$(get_schema_version)
 
     if [[ ${current_version} -eq ${target_version} ]]; then
+        if command -v log_info &> /dev/null; then
+            log_info "Already at target version" "version=${target_version}"
+        fi
         echo -e "${YELLOW}Already at version ${target_version}${NC}"
+        if command -v end_span &> /dev/null; then
+            end_span
+        fi
         return 0
+    fi
+
+    if command -v log_info &> /dev/null; then
+        log_info "Starting migration" "from_version=${current_version}" "to_version=${target_version}" "dry_run=${DRY_RUN}"
     fi
 
     echo -e "${BLUE}=== Migrating database from v${current_version} to v${target_version} ===${NC}"
@@ -349,20 +482,58 @@ migrate_to_version() {
     local backup_path=$(create_backup)
     echo ""
 
+    local migrations_applied=0
+    local rollbacks_applied=0
+    
     if [[ ${target_version} -gt ${current_version} ]]; then
         for version in $(seq $((current_version + 1)) ${target_version}); do
             local migration_info=$(get_migration_info "${version}")
             echo -e "Applying migration to v${version}..."
-            apply_migration ${version}
-            echo -e "${GREEN}✓ Migrated to v${version}: ${migration_info}${NC}"
+            if apply_migration ${version}; then
+                ((migrations_applied++))
+                echo -e "${GREEN}✓ Migrated to v${version}: ${migration_info}${NC}"
+            else
+                if command -v log_error &> /dev/null; then
+                    log_error "Migration failed, stopping" "failed_at_version=${version}"
+                fi
+                if command -v end_span &> /dev/null; then
+                    end_span
+                fi
+                return 1
+            fi
         done
     else
         for version in $(seq ${current_version} -1 $((target_version + 1))); do
             local migration_info=$(get_migration_info "${version}")
             echo -e "Rolling back from v${version}..."
-            rollback_migration ${version}
-            echo -e "${GREEN}✓ Rolled back from v${version}${NC}"
+            if rollback_migration ${version}; then
+                ((rollbacks_applied++))
+                echo -e "${GREEN}✓ Rolled back from v${version}${NC}"
+            else
+                if command -v log_error &> /dev/null; then
+                    log_error "Rollback failed, stopping" "failed_at_version=${version}"
+                fi
+                if command -v end_span &> /dev/null; then
+                    end_span
+                fi
+                return 1
+            fi
         done
+    fi
+
+    if command -v record_metric &> /dev/null; then
+        record_metric "migration_migrations_applied" "$migrations_applied"
+        record_metric "migration_rollbacks_applied" "$rollbacks_applied"
+        record_metric "migration_final_version" "$target_version"
+    fi
+    
+    if command -v log_info &> /dev/null; then
+        log_info "Migration complete" \
+            "from_version=${current_version}" \
+            "to_version=${target_version}" \
+            "migrations_applied=${migrations_applied}" \
+            "rollbacks_applied=${rollbacks_applied}" \
+            "backup_path=${backup_path}"
     fi
 
     echo ""
@@ -370,6 +541,10 @@ migrate_to_version() {
     echo -e "Database is now at version ${target_version}"
     echo ""
     echo "Backup saved at: ${backup_path}"
+    
+    if command -v end_span &> /dev/null; then
+        end_span
+    fi
 }
 
 list_backups() {

@@ -1,0 +1,21 @@
+[Unit]
+Description=Goose Log Rotation Timer
+Documentation=file:///path/to/goose/scripts/LOG_ROTATION_AND_RETENTION.md
+Requires=goose-log-rotation.service
+
+[Timer]
+# Run daily at 2:00 AM
+OnCalendar=*-*-* 02:00:00
+
+# If the system was off during the scheduled time, run immediately after boot
+OnBootSec=15min
+
+# Run missed timers when system comes back online
+Persistent=true
+
+# Accuracy: allow timer to be delayed by up to 1 minute for system efficiency
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+

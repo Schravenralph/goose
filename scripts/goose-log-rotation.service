@@ -1,0 +1,27 @@
+[Unit]
+Description=Goose Log Rotation Service
+Documentation=file:///path/to/goose/scripts/LOG_ROTATION_AND_RETENTION.md
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/goose/scripts/rotate-logs.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goose-log-rotation
+
+# Environment variables for log rotation configuration
+Environment="LOG_DIR=/tmp/goose-logs"
+Environment="GOOSE_LOG_DETAILED_RETENTION_DAYS=7"
+Environment="GOOSE_LOG_SUMMARY_RETENTION_DAYS=30"
+Environment="GOOSE_LOG_ARCHIVE_RETENTION_DAYS=365"
+Environment="GOOSE_LOG_COMPRESS_AFTER_DAYS=7"
+Environment="GOOSE_LOG_MAX_SIZE_MB=100"
+
+# User and group (optional, uncomment if needed)
+# User=goose
+# Group=goose
+
+[Install]
+WantedBy=multi-user.target
+

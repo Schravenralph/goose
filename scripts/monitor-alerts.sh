@@ -14,6 +14,8 @@ LOG_DIR="${LOG_DIR:-/tmp/goose-logs}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-60}"  # Check every 60 seconds
 RETENTION_DAYS="${RETENTION_DAYS:-30}"  # Keep logs for 30 days
 ALERT_CONFIG_FILE="${ALERT_CONFIG_FILE:-$SCRIPT_DIR/alert-config.json}"
+ROTATION_STATUS_FILE="${ROTATION_STATUS_FILE:-$LOG_DIR/.rotation-status.json}"
+MISSED_ROTATION_THRESHOLD_HOURS="${GOOSE_LOG_MISSED_ROTATION_HOURS:-25}"
 
 # Track processed files to avoid duplicate alerts
 PROCESSED_FILES="${PROCESSED_FILES:-/tmp/goose-alerts-processed.txt}"

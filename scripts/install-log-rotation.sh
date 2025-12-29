@@ -1,0 +1,589 @@
+#!/bin/bash
+
+# Unified installation script for automated log rotation
+# Supports both cron and systemd timer methods
+# Detects environment and offers method selection
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROTATE_SCRIPT="$SCRIPT_DIR/rotate-logs.sh"
+CONFIG_DIR="${GOOSE_LOG_ROTATION_CONFIG_DIR:-$HOME/.config/goose/log-rotation}"
+CONFIG_FILE="$CONFIG_DIR/rotation-config.json"
+
+# Source logging utilities if available
+if [[ -f "$SCRIPT_DIR/logging-utils.sh" ]]; then
+    source "$SCRIPT_DIR/logging-utils.sh"
+fi
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+# Default configuration
+METHOD="${GOOSE_ROTATION_METHOD:-}"  # cron, systemd, or empty for auto-detect
+SCHEDULE="${GOOSE_ROTATION_SCHEDULE:-0 2 * * *}"  # Daily at 2 AM
+INSTALL_TYPE="${GOOSE_ROTATION_INSTALL_TYPE:-user}"  # user or system
+LOG_DIR="${GOOSE_ROTATION_LOG_DIR:-/tmp/goose-logs}"
+DRY_RUN="${GOOSE_ROTATION_DRY_RUN:-false}"
+NON_INTERACTIVE="${GOOSE_ROTATION_NON_INTERACTIVE:-false}"
+
+# Function to detect OS
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        echo "linux"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to check if cron is available
+check_cron_available() {
+    if command -v crontab &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check if systemd is available
+check_systemd_available() {
+    if [[ "$(detect_os)" != "linux" ]]; then
+        return 1
+    fi
+    
+    # Check if systemd is running
+    if command -v systemctl &> /dev/null && systemctl --version &> /dev/null; then
+        # Check if we're in a systemd environment (not in Docker without systemd)
+        if systemctl list-units --type=service &> /dev/null 2>&1 || [[ -d /run/systemd/system ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Function to check if rotation script exists and is executable
+check_rotate_script() {
+    if [[ ! -f "$ROTATE_SCRIPT" ]]; then
+        print_error "Log rotation script not found: $ROTATE_SCRIPT"
+        exit 1
+    fi
+    
+    if [[ ! -x "$ROTATE_SCRIPT" ]]; then
+        print_warning "Making rotation script executable..."
+        if [[ "$DRY_RUN" != "true" ]]; then
+            chmod +x "$ROTATE_SCRIPT"
+        fi
+    fi
+}
+
+# Function to test rotation script execution
+test_rotate_script() {
+    print_info "Testing rotation script..."
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_info "[DRY RUN] Would test: $ROTATE_SCRIPT --help"
+        return 0
+    fi
+    
+    if "$ROTATE_SCRIPT" --help &> /dev/null || "$ROTATE_SCRIPT" 2>&1 | head -1 &> /dev/null; then
+        print_success "Rotation script is executable"
+        return 0
+    else
+        print_warning "Could not verify rotation script execution (this may be normal)"
+        return 0
+    fi
+}
+
+# Function to get absolute path
+get_absolute_path() {
+    local path="$1"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        readlink -f "$path" 2>/dev/null || python3 -c "import os; print(os.path.realpath('$path'))" 2>/dev/null || echo "$path"
+    else
+        # Linux
+        readlink -f "$path" 2>/dev/null || echo "$path"
+    fi
+}
+
+# Function to save configuration
+save_config() {
+    local method="$1"
+    local schedule="$2"
+    local install_type="$3"
+    
+    mkdir -p "$CONFIG_DIR"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_info "[DRY RUN] Would save config to: $CONFIG_FILE"
+        return 0
+    fi
+    
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "method": "$method",
+  "schedule": "$schedule",
+  "install_type": "$install_type",
+  "installed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "script_path": "$(get_absolute_path "$ROTATE_SCRIPT")"
+}
+EOF
+    print_success "Configuration saved to: $CONFIG_FILE"
+}
+
+# Function to install cron (reuses logic from install-cron-log-rotation.sh)
+install_cron() {
+    local schedule="$1"
+    local install_type="$2"
+    
+    print_info "Installing cron-based log rotation..."
+    
+    # Create wrapper script
+    local wrapper_file="$SCRIPT_DIR/cron-rotate-logs-wrapper.sh"
+    local abs_rotate_script
+    abs_rotate_script=$(get_absolute_path "$ROTATE_SCRIPT")
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_info "[DRY RUN] Would create wrapper: $wrapper_file"
+        print_info "[DRY RUN] Would install cron with schedule: $schedule"
+        return 0
+    fi
+    
+    # Create log directory
+    mkdir -p "$LOG_DIR"
+    local cron_log_file="$LOG_DIR/cron-rotation.log"
+    
+    cat > "$wrapper_file" <<EOF
+#!/bin/bash
+# Wrapper script for cron log rotation
+# Generated by install-log-rotation.sh
+# Do not edit manually - regenerated on each installation
+
+export PATH="/usr/local/bin:/usr/bin:/bin:\$PATH"
+export LOG_DIR="${LOG_DIR:-/tmp/goose-logs}"
+export GOOSE_LOG_DETAILED_RETENTION_DAYS="${GOOSE_LOG_DETAILED_RETENTION_DAYS:-7}"
+export GOOSE_LOG_SUMMARY_RETENTION_DAYS="${GOOSE_LOG_SUMMARY_RETENTION_DAYS:-30}"
+export GOOSE_LOG_ARCHIVE_RETENTION_DAYS="${GOOSE_LOG_ARCHIVE_RETENTION_DAYS:-365}"
+export GOOSE_LOG_COMPRESS_AFTER_DAYS="${GOOSE_LOG_COMPRESS_AFTER_DAYS:-7}"
+export GOOSE_LOG_MAX_SIZE_MB="${GOOSE_LOG_MAX_SIZE_MB:-100}"
+export TZ="\$(date +%Z)"
+
+LOG_FILE="$cron_log_file"
+mkdir -p "\$(dirname "\$LOG_FILE")"
+exec >> "\$LOG_FILE" 2>&1
+
+echo "=== Cron log rotation started at \$(date) ==="
+"$abs_rotate_script"
+EXIT_CODE=\$?
+if [[ \$EXIT_CODE -eq 0 ]]; then
+    echo "=== Cron log rotation completed successfully at \$(date) ==="
+else
+    echo "=== Cron log rotation failed with exit code \$EXIT_CODE at \$(date) ==="
+fi
+exit \$EXIT_CODE
+EOF
+
+    chmod +x "$wrapper_file"
+    local abs_wrapper_script
+    abs_wrapper_script=$(get_absolute_path "$wrapper_file")
+    
+    if [[ "$install_type" == "system" ]]; then
+        if [[ $EUID -ne 0 ]]; then
+            print_error "System-level cron installation requires root privileges"
+            print_info "Please run with sudo: sudo $0"
+            exit 1
+        fi
+        
+        local cron_file="/etc/cron.d/goose-log-rotation"
+        cat > "$cron_file" <<EOF
+# Goose log rotation cron job
+# Generated by install-log-rotation.sh
+# Do not edit manually - regenerated on each installation
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+$schedule root $abs_wrapper_script
+EOF
+        chmod 644 "$cron_file"
+        print_success "System-level cron job installed: $cron_file"
+    else
+        local cron_comment="# Goose log rotation cron job"
+        if crontab -l 2>/dev/null | grep -q "$cron_comment"; then
+            print_warning "Cron job already exists. Removing old entry..."
+            crontab -l 2>/dev/null | grep -v "$cron_comment" | grep -v "$abs_wrapper_script" | crontab - || true
+        fi
+        
+        (crontab -l 2>/dev/null || true; echo "$schedule $abs_wrapper_script $cron_comment") | crontab -
+        print_success "User-level cron job installed"
+    fi
+    
+    print_info "Schedule: $schedule"
+    print_info "Cron log file: $cron_log_file"
+}
+
+# Function to install systemd timer
+install_systemd() {
+    local schedule="$1"
+    local install_type="$2"
+    
+    print_info "Installing systemd timer-based log rotation..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_info "[DRY RUN] Would create systemd service and timer"
+        print_info "[DRY RUN] Would enable timer with schedule: $schedule"
+        return 0
+    fi
+    
+    local abs_rotate_script
+    abs_rotate_script=$(get_absolute_path "$ROTATE_SCRIPT")
+    
+    # Convert cron schedule to systemd OnCalendar format
+    # Simple conversion: "0 2 * * *" -> "daily" at 2:00
+    local on_calendar="daily"
+    if [[ "$schedule" =~ ^([0-9]+)\ ([0-9]+)\ \*\ \*\ \*$ ]]; then
+        local minute="${BASH_REMATCH[1]}"
+        local hour="${BASH_REMATCH[2]}"
+        on_calendar="${hour}:${minute}"
+    fi
+    
+    if [[ "$install_type" == "system" ]]; then
+        if [[ $EUID -ne 0 ]]; then
+            print_error "System-level systemd installation requires root privileges"
+            print_info "Please run with sudo: sudo $0"
+            exit 1
+        fi
+        
+        local service_file="/etc/systemd/system/goose-log-rotation.service"
+        local timer_file="/etc/systemd/system/goose-log-rotation.timer"
+        
+        cat > "$service_file" <<EOF
+[Unit]
+Description=Goose log rotation service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$abs_rotate_script
+Environment="LOG_DIR=${LOG_DIR:-/tmp/goose-logs}"
+Environment="GOOSE_LOG_DETAILED_RETENTION_DAYS=${GOOSE_LOG_DETAILED_RETENTION_DAYS:-7}"
+Environment="GOOSE_LOG_SUMMARY_RETENTION_DAYS=${GOOSE_LOG_SUMMARY_RETENTION_DAYS:-30}"
+Environment="GOOSE_LOG_ARCHIVE_RETENTION_DAYS=${GOOSE_LOG_ARCHIVE_RETENTION_DAYS:-365}"
+Environment="GOOSE_LOG_COMPRESS_AFTER_DAYS=${GOOSE_LOG_COMPRESS_AFTER_DAYS:-7}"
+Environment="GOOSE_LOG_MAX_SIZE_MB=${GOOSE_LOG_MAX_SIZE_MB:-100}"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        cat > "$timer_file" <<EOF
+[Unit]
+Description=Goose log rotation timer
+Requires=goose-log-rotation.service
+
+[Timer]
+OnCalendar=$on_calendar
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+        systemctl daemon-reload
+        systemctl enable goose-log-rotation.timer
+        systemctl start goose-log-rotation.timer
+        
+        print_success "System-level systemd timer installed"
+        print_info "Service: $service_file"
+        print_info "Timer: $timer_file"
+    else
+        mkdir -p "$HOME/.config/systemd/user"
+        
+        local service_file="$HOME/.config/systemd/user/goose-log-rotation.service"
+        local timer_file="$HOME/.config/systemd/user/goose-log-rotation.timer"
+        
+        cat > "$service_file" <<EOF
+[Unit]
+Description=Goose log rotation service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$abs_rotate_script
+Environment="LOG_DIR=${LOG_DIR:-/tmp/goose-logs}"
+Environment="GOOSE_LOG_DETAILED_RETENTION_DAYS=${GOOSE_LOG_DETAILED_RETENTION_DAYS:-7}"
+Environment="GOOSE_LOG_SUMMARY_RETENTION_DAYS=${GOOSE_LOG_SUMMARY_RETENTION_DAYS:-30}"
+Environment="GOOSE_LOG_ARCHIVE_RETENTION_DAYS=${GOOSE_LOG_ARCHIVE_RETENTION_DAYS:-365}"
+Environment="GOOSE_LOG_COMPRESS_AFTER_DAYS=${GOOSE_LOG_COMPRESS_AFTER_DAYS:-7}"
+Environment="GOOSE_LOG_MAX_SIZE_MB=${GOOSE_LOG_MAX_SIZE_MB:-100}"
+
+[Install]
+WantedBy=default.target
+EOF
+
+        cat > "$timer_file" <<EOF
+[Unit]
+Description=Goose log rotation timer
+Requires=goose-log-rotation.service
+
+[Timer]
+OnCalendar=$on_calendar
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+        systemctl --user daemon-reload
+        systemctl --user enable goose-log-rotation.timer
+        systemctl --user start goose-log-rotation.timer
+        
+        print_success "User-level systemd timer installed"
+        print_info "Service: $service_file"
+        print_info "Timer: $timer_file"
+    fi
+    
+    print_info "Schedule: OnCalendar=$on_calendar"
+}
+
+# Function to detect and select method
+detect_and_select_method() {
+    local cron_available=false
+    local systemd_available=false
+    
+    if check_cron_available; then
+        cron_available=true
+    fi
+    
+    if check_systemd_available; then
+        systemd_available=true
+    fi
+    
+    # If method is already specified, use it
+    if [[ -n "$METHOD" ]]; then
+        if [[ "$METHOD" == "cron" && "$cron_available" == "true" ]]; then
+            echo "cron"
+            return 0
+        elif [[ "$METHOD" == "systemd" && "$systemd_available" == "true" ]]; then
+            echo "systemd"
+            return 0
+        else
+            print_error "Specified method '$METHOD' is not available"
+            exit 1
+        fi
+    fi
+    
+    # Auto-detect or prompt
+    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+        # Non-interactive: prefer systemd on Linux, cron otherwise
+        if [[ "$systemd_available" == "true" ]]; then
+            echo "systemd"
+        elif [[ "$cron_available" == "true" ]]; then
+            echo "cron"
+        else
+            print_error "No automation method available (cron or systemd)"
+            exit 1
+        fi
+    else
+        # Interactive: prompt user
+        print_info "Available automation methods:"
+        local options=()
+        local method_num=1
+        
+        if [[ "$cron_available" == "true" ]]; then
+            echo "  [$method_num] cron (works on all Unix systems)"
+            options+=("cron")
+            method_num=$((method_num + 1))
+        fi
+        
+        if [[ "$systemd_available" == "true" ]]; then
+            echo "  [$method_num] systemd timer (Linux only, better integration)"
+            options+=("systemd")
+            method_num=$((method_num + 1))
+        fi
+        
+        if [[ ${#options[@]} -eq 0 ]]; then
+            print_error "No automation method available (cron or systemd)"
+            exit 1
+        fi
+        
+        if [[ ${#options[@]} -eq 1 ]]; then
+            print_info "Only one method available, selecting: ${options[0]}"
+            echo "${options[0]}"
+            return 0
+        fi
+        
+        echo
+        read -p "Select method [1-${#options[@]}]: " choice
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#options[@]} ]]; then
+            echo "${options[$((choice - 1))]}"
+        else
+            print_error "Invalid selection"
+            exit 1
+        fi
+    fi
+}
+
+# Function to show usage
+show_usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Install automated log rotation for Goose (supports cron and systemd).
+
+OPTIONS:
+    -m, --method METHOD        Automation method: cron or systemd (auto-detect if not specified)
+    -s, --schedule SCHEDULE    Schedule (cron format: "0 2 * * *" or systemd: "daily")
+    -t, --type TYPE            Installation type: user or system (default: user)
+    -l, --log-dir DIR          Directory for rotation logs (default: /tmp/goose-logs)
+    -n, --non-interactive      Non-interactive mode (use environment variables or defaults)
+    -d, --dry-run              Dry run mode (show what would be done without making changes)
+    -h, --help                 Show this help message
+
+ENVIRONMENT VARIABLES:
+    GOOSE_ROTATION_METHOD          Automation method: cron or systemd
+    GOOSE_ROTATION_SCHEDULE        Schedule (default: "0 2 * * *")
+    GOOSE_ROTATION_INSTALL_TYPE    Installation type: user or system
+    GOOSE_ROTATION_LOG_DIR         Directory for rotation logs
+    GOOSE_ROTATION_DRY_RUN         Set to "true" for dry run mode
+    GOOSE_ROTATION_NON_INTERACTIVE Set to "true" for non-interactive mode
+    LOG_DIR                        Log directory for rotation script
+    GOOSE_LOG_*                    Log rotation configuration (see rotate-logs.sh)
+
+EXAMPLES:
+    # Interactive installation (auto-detect method)
+    $0
+
+    # Install with cron (non-interactive)
+    GOOSE_ROTATION_METHOD=cron GOOSE_ROTATION_NON_INTERACTIVE=true $0
+
+    # Install with systemd timer (requires systemd)
+    $0 --method systemd
+
+    # Install system-level cron (requires sudo)
+    sudo $0 --method cron --type system
+
+    # Dry run to see what would be installed
+    $0 --dry-run
+
+EOF
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -m|--method)
+            METHOD="$2"
+            shift 2
+            ;;
+        -s|--schedule)
+            SCHEDULE="$2"
+            shift 2
+            ;;
+        -t|--type)
+            INSTALL_TYPE="$2"
+            if [[ "$INSTALL_TYPE" != "user" && "$INSTALL_TYPE" != "system" ]]; then
+                print_error "Invalid installation type: $INSTALL_TYPE (must be 'user' or 'system')"
+                exit 1
+            fi
+            shift 2
+            ;;
+        -l|--log-dir)
+            LOG_DIR="$2"
+            shift 2
+            ;;
+        -n|--non-interactive)
+            NON_INTERACTIVE="true"
+            shift
+            ;;
+        -d|--dry-run)
+            DRY_RUN="true"
+            shift
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Main installation
+main() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_warning "DRY RUN MODE - No changes will be made"
+        echo
+    fi
+    
+    print_info "Goose Log Rotation Installation"
+    print_info "================================="
+    echo
+    
+    # Detect OS
+    local os_type
+    os_type=$(detect_os)
+    print_info "Detected OS: $os_type"
+    
+    # Check prerequisites
+    check_rotate_script
+    test_rotate_script
+    
+    # Detect and select method
+    local selected_method
+    selected_method=$(detect_and_select_method)
+    print_info "Selected method: $selected_method"
+    
+    # Install based on method
+    if [[ "$selected_method" == "cron" ]]; then
+        install_cron "$SCHEDULE" "$INSTALL_TYPE"
+    elif [[ "$selected_method" == "systemd" ]]; then
+        install_systemd "$SCHEDULE" "$INSTALL_TYPE"
+    else
+        print_error "Unknown method: $selected_method"
+        exit 1
+    fi
+    
+    # Save configuration
+    save_config "$selected_method" "$SCHEDULE" "$INSTALL_TYPE"
+    
+    echo
+    print_success "Installation complete!"
+    echo
+    print_info "To verify installation, run:"
+    print_info "  $SCRIPT_DIR/manage-log-rotation.sh status"
+    echo
+    print_info "To uninstall, run:"
+    print_info "  $SCRIPT_DIR/uninstall-log-rotation.sh"
+}
+
+# Run main if script is executed directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
+

@@ -1,0 +1,74 @@
+# Example Job Scheduler Configuration
+# This file demonstrates how to configure jobs for the custom job scheduler
+
+jobs:
+  # Example 1: Simple daily backup script
+  - id: daily-backup
+    name: Daily Backup
+    description: Runs daily backup script at midnight
+    script_path: /path/to/backup.sh
+    cron_schedule: "0 0 * * *"  # Daily at midnight
+    working_directory: /backup
+    environment:
+      BACKUP_DIR: /backups
+      RETENTION_DAYS: "30"
+    retry_config:
+      max_retries: 3
+      initial_delay_seconds: 300
+      max_delay_seconds: 3600
+      exponential_backoff: true
+    timeout_seconds: 3600
+
+  # Example 2: Script with dependencies
+  - id: process-data
+    name: Process Data
+    description: Processes data after backup completes
+    script_path: /path/to/process_data.py
+    cron_schedule: "0 1 * * *"  # Daily at 1 AM
+    dependencies:
+      - daily-backup  # Must wait for backup to complete successfully
+    environment:
+      DATA_DIR: /data
+      OUTPUT_DIR: /output
+    retry_config:
+      max_retries: 2
+      initial_delay_seconds: 60
+    timeout_seconds: 1800
+
+  # Example 3: High-frequency monitoring script
+  - id: health-check
+    name: Health Check
+    description: Checks system health every 5 minutes
+    script_path: /path/to/health_check.sh
+    cron_schedule: "*/5 * * * *"  # Every 5 minutes
+    retry_config:
+      max_retries: 1
+      initial_delay_seconds: 30
+      exponential_backoff: false
+    timeout_seconds: 60
+
+  # Example 4: Weekly report generation
+  - id: weekly-report
+    name: Weekly Report
+    description: Generates weekly report every Monday at 9 AM
+    script_path: /path/to/generate_report.py
+    cron_schedule: "0 9 * * 1"  # Every Monday at 9 AM
+    working_directory: /reports
+    environment:
+      REPORT_FORMAT: pdf
+      EMAIL_RECIPIENTS: "admin@example.com"
+    retry_config:
+      max_retries: 2
+      initial_delay_seconds: 300
+    timeout_seconds: 7200
+
+  # Example 5: One-time script (no schedule, must be run manually)
+  - id: manual-cleanup
+    name: Manual Cleanup
+    description: Manual cleanup script (no automatic schedule)
+    script_path: /path/to/cleanup.sh
+    # No cron_schedule - must be run via run_now
+    retry_config:
+      max_retries: 0
+    timeout_seconds: 600
+

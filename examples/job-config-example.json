@@ -1,0 +1,43 @@
+{
+  "jobs": [
+    {
+      "id": "daily-backup",
+      "name": "Daily Backup",
+      "description": "Runs daily backup script at midnight",
+      "script_path": "/path/to/backup.sh",
+      "cron_schedule": "0 0 * * *",
+      "working_directory": "/backup",
+      "environment": {
+        "BACKUP_DIR": "/backups",
+        "RETENTION_DAYS": "30"
+      },
+      "retry_config": {
+        "max_retries": 3,
+        "initial_delay_seconds": 300,
+        "max_delay_seconds": 3600,
+        "exponential_backoff": true
+      },
+      "timeout_seconds": 3600,
+      "paused": false
+    },
+    {
+      "id": "process-data",
+      "name": "Process Data",
+      "description": "Processes data after backup completes",
+      "script_path": "/path/to/process_data.py",
+      "cron_schedule": "0 1 * * *",
+      "dependencies": ["daily-backup"],
+      "environment": {
+        "DATA_DIR": "/data",
+        "OUTPUT_DIR": "/output"
+      },
+      "retry_config": {
+        "max_retries": 2,
+        "initial_delay_seconds": 60
+      },
+      "timeout_seconds": 1800,
+      "paused": false
+    }
+  ]
+}
+
