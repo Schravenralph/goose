@@ -115,6 +115,25 @@ All scripts maintain backward compatibility. If `logging-utils.sh` is not availa
 
 For more details, see `LOGGING_IMPROVEMENTS.md`.
 
+### OpenTelemetry (OTLP) Integration
+
+Bash scripts can export traces and spans to OpenTelemetry-compatible observability backends (Jaeger, Tempo, Grafana Cloud, etc.) for distributed tracing.
+
+**Quick Start:**
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+# Spans created with start_span()/end_span() are automatically exported
+```
+
+**Features:**
+- Automatic span export to OTLP endpoints
+- W3C Trace Context compatible trace IDs
+- Span context propagation between scripts
+- Parent-child span relationships
+
+For detailed documentation, see `OTLP_INTEGRATION.md`.
+
 ## Benchmark Scripts
 
 ## run-benchmarks.sh

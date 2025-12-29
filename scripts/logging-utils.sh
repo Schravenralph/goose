@@ -121,16 +121,25 @@ log_fatal() { log "FATAL" "$@"; exit 1; }
 start_span() {
     local span_name="$1"
     local span_id=$(uuidgen 2>/dev/null || date +%s%N | sha256sum | cut -d' ' -f1 | head -c 16)
+    # Store parent span ID before setting new one
+    local parent_span_id="${SPAN_ID:-}"
+    export PARENT_SPAN_ID="$parent_span_id"
     export SPAN_ID="$span_id"
     export SPAN_NAME="$span_name"
     export SPAN_START_TIME=$(date +%s.%N)
     log_info "Starting span: $span_name" "span_id=$span_id"
+    
+    # Track span for OTLP export if OTLP is enabled
+    if [[ -n "$(type -t otlp_start_span)" ]] && [[ "$(type -t otlp_start_span)" == "function" ]] && [[ "${OTLP_ENABLED:-}" == "true" ]]; then
+        otlp_start_span "$span_id" "$span_name" "$TRACE_ID" "$parent_span_id"
+    fi
 }
 
 # End a span
 end_span() {
     if [[ -n "${SPAN_START_TIME:-}" ]]; then
         local end_time=$(date +%s.%N)
+        local current_span_id="${SPAN_ID:-}"
         # Calculate duration - use awk if bc is not available
         local duration
         if command -v bc &> /dev/null; then
@@ -141,6 +150,16 @@ end_span() {
         fi
         log_info "Ending span: ${SPAN_NAME:-unknown}" "duration=${duration}s" "span_id=${SPAN_ID:-}"
         record_metric "span_duration" "$duration" "span_name=${SPAN_NAME:-unknown}"
+        
+        # Export span to OTLP if enabled
+        if [[ -n "$current_span_id" ]] && [[ -n "$(type -t otlp_end_span)" ]] && [[ "$(type -t otlp_end_span)" == "function" ]] && [[ "${OTLP_ENABLED:-}" == "true" ]]; then
+            local status="OK"
+            if [[ "${EXIT_CODE:-0}" != "0" ]] && [[ -n "${SPAN_NAME:-}" ]]; then
+                status="ERROR"
+            fi
+            otlp_end_span "$current_span_id" "$status" || true
+        fi
+        
         unset SPAN_ID SPAN_NAME SPAN_START_TIME
     fi
 }
@@ -214,6 +233,11 @@ write_metrics() {
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 if [[ -f "$SCRIPT_DIR/alerting-utils.sh" ]]; then
     source "$SCRIPT_DIR/alerting-utils.sh"
+fi
+
+# Load OTLP utilities if available
+if [[ -f "$SCRIPT_DIR/otlp-utils.sh" ]]; then
+    source "$SCRIPT_DIR/otlp-utils.sh"
 fi
 
 # Script-triggered log rotation configuration
@@ -374,6 +398,11 @@ trigger_log_rotation() {
 
 # Trap to ensure metrics are written on exit, rotation is triggered if needed, and alerts are sent if needed
 trap 'EXIT_CODE=$?; write_metrics; trigger_log_rotation; end_span; if command -v check_script_failure &> /dev/null; then check_script_failure "$EXIT_CODE"; fi; if command -v analyze_metrics_and_alert &> /dev/null && [[ -n "${METRICS_FILE:-}" ]] && [[ -f "$METRICS_FILE" ]]; then analyze_metrics_and_alert "$METRICS_FILE"; fi' EXIT
+
+# Export trace context for propagation (if OTLP utils loaded)
+if [[ -n "$(type -t export_trace_context_env)" ]] && [[ "$(type -t export_trace_context_env)" == "function" ]]; then
+    export_trace_context_env || true
+fi
 
 # Initialize logging
 log_info "Script started" "trace_id=$TRACE_ID" "log_file=$LOG_FILE"
