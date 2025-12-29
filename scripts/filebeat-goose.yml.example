@@ -1,0 +1,99 @@
+# Filebeat configuration for Goose logs
+# Copy this file to your Filebeat configuration directory
+# Typically: /etc/filebeat/filebeat.yml or /usr/share/filebeat/filebeat.yml
+
+filebeat.inputs:
+  # Goose JSON logs input
+  - type: log
+    enabled: true
+    paths:
+      - /tmp/goose-logs/*.jsonl
+    fields:
+      service: goose
+      log_type: script_execution
+    fields_under_root: false
+    json.keys_under_root: true
+    json.add_error_key: true
+    json.message_key: message
+    # Parse timestamp from log entry
+    parsers:
+      - ndjson:
+          keys_under_root: true
+          add_error_key: true
+
+# Processors to enrich logs
+processors:
+  # Add host information
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+
+  # Parse timestamp
+  - timestamp:
+      field: timestamp
+      layouts:
+        - '2006-01-02T15:04:05.000Z'
+        - '2006-01-02T15:04:05Z'
+      test:
+        - '2024-12-29T08:48:15.123Z'
+
+  # Add script name as tag
+  - add_tags:
+      tags: ["goose-script"]
+      when.has.fields: script
+
+  # Convert log level to severity
+  - script:
+      lang: javascript
+      id: severity_mapper
+      source: |
+        function process(evt) {
+          var level = evt.Get("level");
+          var severity = 0;
+          switch(level) {
+            case "DEBUG": severity = 7; break;
+            case "INFO": severity = 6; break;
+            case "WARN": severity = 4; break;
+            case "ERROR": severity = 3; break;
+            case "FATAL": severity = 2; break;
+            default: severity = 6;
+          }
+          evt.Put("severity", severity);
+          return evt;
+        }
+
+# Output to Elasticsearch
+output.elasticsearch:
+  hosts: ["localhost:9200"]
+  index: "goose-logs-%{+yyyy.MM.dd}"
+  template.name: "goose-logs"
+  template.pattern: "goose-logs-*"
+  template.settings:
+    index.number_of_shards: 1
+    index.number_of_replicas: 0
+
+# Optional: Output to Logstash instead
+# output.logstash:
+#   hosts: ["localhost:5044"]
+
+# Logging configuration
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+
+# Setup template and dashboards (run once)
+setup.template.enabled: true
+setup.template.name: "goose-logs"
+setup.template.pattern: "goose-logs-*"
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0
+
+# Optional: Setup Kibana dashboards
+# setup.dashboards.enabled: true
+# setup.kibana:
+#   host: "localhost:5601"
+

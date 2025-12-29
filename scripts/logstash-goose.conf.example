@@ -1,0 +1,91 @@
+# Logstash configuration for Goose logs
+# Copy this file to your Logstash configuration directory
+# Typically: /etc/logstash/conf.d/goose.conf
+
+input {
+  # Read JSON log files
+  file {
+    path => "/tmp/goose-logs/*.jsonl"
+    start_position => "beginning"
+    sincedb_path => "/var/lib/logstash/goose-sincedb"
+    codec => "json"
+    type => "goose-script"
+    tags => ["goose", "json"]
+  }
+}
+
+filter {
+  # Parse JSON logs (already parsed by json codec, but ensure fields are correct)
+  if [type] == "goose-script" {
+    # Parse timestamp
+    date {
+      match => [ "timestamp", "ISO8601" ]
+      target => "@timestamp"
+    }
+
+    # Add service name
+    mutate {
+      add_field => { "service" => "goose" }
+    }
+
+    # Map log level to severity
+    if [level] == "DEBUG" {
+      mutate { add_field => { "severity" => 7 } }
+    } else if [level] == "INFO" {
+      mutate { add_field => { "severity" => 6 } }
+    } else if [level] == "WARN" {
+      mutate { add_field => { "severity" => 4 } }
+    } else if [level] == "ERROR" {
+      mutate { add_field => { "severity" => 3 } }
+    } else if [level] == "FATAL" {
+      mutate { add_field => { "severity" => 2 } }
+    }
+
+    # Extract script name for indexing
+    if [script] {
+      mutate {
+        add_field => { "[@metadata][script_name]" => "%{script}" }
+      }
+    }
+
+    # Extract trace_id for correlation
+    if [trace_id] {
+      mutate {
+        add_field => { "[@metadata][trace_id]" => "%{trace_id}" }
+      }
+    }
+
+    # Convert numeric fields
+    if [pid] {
+      mutate {
+        convert => { "pid" => "integer" }
+      }
+    }
+
+    # Add geoip if hostname is available (optional)
+    # if [hostname] {
+    #   dns {
+    #     reverse => [ "hostname" ]
+    #     action => "replace"
+    #   }
+    # }
+  }
+}
+
+output {
+  # Output to Elasticsearch
+  elasticsearch {
+    hosts => ["localhost:9200"]
+    index => "goose-logs-%{+yyyy.MM.dd}"
+    document_id => "%{[@metadata][trace_id]}-%{timestamp}"
+    template_name => "goose-logs"
+    template => "/etc/logstash/templates/goose-logs-template.json"
+    template_overwrite => true
+  }
+
+  # Optional: Output to stdout for debugging
+  # stdout {
+  #   codec => rubydebug
+  # }
+}
+

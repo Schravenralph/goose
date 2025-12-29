@@ -1,0 +1,58 @@
+# Prometheus alerting rules for Goose metrics
+# Copy this file to your Prometheus rules directory
+# Typically: /etc/prometheus/rules/goose_alerts.yml
+
+groups:
+  - name: goose_alerts
+    interval: 30s
+    rules:
+      # Alert when script execution fails
+      - alert: GooseScriptFailure
+        expr: goose_exit_code{script=~".+"} != 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Goose script {{ $labels.script }} failed"
+          description: "Script {{ $labels.script }} exited with code {{ $value }}"
+
+      # Alert when error count is high
+      - alert: GooseHighErrorCount
+        expr: sum(goose_clippy_errors{script=~".+"}) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error count in Goose scripts"
+          description: "Total error count is {{ $value }}, which is above threshold"
+
+      # Alert when execution duration is too long
+      - alert: GooseSlowExecution
+        expr: goose_duration{script=~".+"} > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Goose script {{ $labels.script }} is running slowly"
+          description: "Script {{ $labels.script }} took {{ $value }} seconds to execute"
+
+      # Alert when success rate drops
+      - alert: GooseLowSuccessRate
+        expr: (sum(goose_exit_code{script=~".+"} == 0) / count(goose_exit_code{script=~".+"})) * 100 < 80
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Goose script success rate is low"
+          description: "Success rate is {{ $value }}%, which is below 80% threshold"
+
+      # Alert when no metrics are received
+      - alert: GooseNoMetrics
+        expr: absent(goose_metrics_files_total)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No Goose metrics received"
+          description: "No metrics have been received from Goose exporter in the last 10 minutes"
+
